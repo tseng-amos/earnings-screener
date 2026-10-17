@@ -23,7 +23,8 @@ const STAGES = [
 const CHECK_LABEL = { pass: "合格", warn: "黃燈", fail: "不合格", pending: "待觀察" };
 const REGIME_LABEL = { strong: "強（正常做）", caution: "小心", weak: "弱（少做／小做）", unknown: "未知" };
 
-const state = { cfg: null, cal: null, scr: null, year: 0, month: 0, selDate: null, stage: "breakout", expanded: new Set() };
+const state = { cfg: null, cal: null, scr: null, year: 0, month: 0, selDate: null, stage: "breakout", expanded: new Set(),
+  byDate: {}, daySort: { key: "mcap", dir: -1 }, dayFilter: { eps: "all", minMcap: 0, onlyCand: false } };
 
 // ---------- 載入 ----------
 async function loadJSON(path) {
@@ -97,6 +98,22 @@ function bindCalendar() {
   $("next").onclick = () => shiftMonth(1);
   $("today").onclick = () => { const n = new Date(); state.year = n.getFullYear(); state.month = n.getMonth(); renderCalendar(); };
   ["fUS", "fJP", "fJPAll", "fCand", "q"].forEach((id) => $(id).addEventListener("input", renderCalendar));
+  $("dayPanel").addEventListener("click", (e) => {
+    const k = e.target.closest("th[data-sort]")?.dataset.sort;
+    if (!k) return;
+    const sort = state.daySort;
+    sort.dir = sort.key === k ? -sort.dir : (k === "symbol" || k === "name" ? 1 : -1);
+    sort.key = k;
+    renderDayPanel();
+  });
+  $("dayPanel").addEventListener("input", (e) => {
+    const f = state.dayFilter;
+    if (e.target.id === "dEps") f.eps = e.target.value;
+    else if (e.target.id === "dMcap") f.minMcap = Number(e.target.value);
+    else if (e.target.id === "dCand") f.onlyCand = e.target.checked;
+    else return;
+    renderDayPanel();
+  });
   $("calGrid").addEventListener("click", (e) => {
     const cell = e.target.closest(".cell");
     if (cell) { state.selDate = cell.dataset.date; renderCalendar(); }
@@ -134,27 +151,58 @@ function renderCalendar() {
     html += `<div class="${cls}" data-date="${dIso}"><div class="d"><span>${dt.getDate()}</span><span class="n">${nUS ? `<span class="us">美${nUS}</span> ` : ""}${nJP ? `<span class="jp">日${nJP}</span>` : ""}</span></div>${chips}${list.length > 3 ? `<span class="more">+${list.length - 3} 家</span>` : ""}</div>`;
   }
   $("calGrid").innerHTML = html;
-  renderDayPanel(byDate);
+  state.byDate = byDate;
+  renderDayPanel();
 }
 
-function renderDayPanel(byDate) {
+const STAGE_RANK = { breakout: 5, consolidating: 4, watch: 3, extended: 2, removed: 1 };
+const DAY_COLS = [
+  ["symbol", "代號"], ["name", "公司"], ["time", "時段"], ["mcap", "市值", true],
+  ["eps_forecast", "EPS預期", true], ["eps_actual", "EPS實際", true], ["eps_surprise_pct", "驚喜", true], ["stage", "選股狀態"],
+];
+
+function renderDayPanel() {
   const panel = $("dayPanel");
   if (!state.selDate) { panel.classList.add("hidden"); return; }
-  const list = (byDate[state.selDate] || []).slice().sort((a, b) => (b.mcap || 0) - (a.mcap || 0));
   const cands = new Map((state.scr.candidates || []).map((c) => [`${c.market}:${c.symbol}`, c]));
+  const { eps, minMcap, onlyCand } = state.dayFilter;
+  const { key, dir } = state.daySort;
+  const all = state.byDate[state.selDate] || [];
+  const stageOf = (e) => cands.get(`${e.market}:${e.symbol}`)?.stage;
+  const sortVal = (e) => (key === "stage" ? STAGE_RANK[stageOf(e)] : e[key]);
+
+  const list = all.filter((e) => {
+    if (eps === "beat" && !(e.eps_surprise_pct > 0)) return false;
+    if (eps === "miss" && !(e.eps_surprise_pct < 0)) return false;
+    if (eps === "none" && e.eps_surprise_pct != null) return false;
+    if (minMcap && (e.mcap ?? 0) < minMcap) return false; // 日本無市值資料，設門檻時會被排除
+    if (onlyCand && !stageOf(e)) return false;
+    return true;
+  }).sort((a, b) => {
+    const va = sortVal(a), vb = sortVal(b);
+    if (va == null || va === "") return 1;   // 空值一律排最後
+    if (vb == null || vb === "") return -1;
+    return typeof va === "string" ? dir * va.localeCompare(vb) : dir * (va - vb);
+  });
+
   const rows = list.map((e) => {
-    const c = cands.get(`${e.market}:${e.symbol}`);
-    const stage = c ? (STAGES.find((s) => s[0] === c.stage) || [])[1] : "";
+    const stage = stageOf(e) ? (STAGES.find((s) => s[0] === stageOf(e)) || [])[1] : "";
     const sur = e.eps_surprise_pct;
     return `<tr><td><span class="tag ${e.market === "US" ? "us" : "jp"}">${e.market === "US" ? "美" : "日"}</span>${esc(e.symbol)}</td><td>${esc(e.name)}</td><td>${esc(e.time)}</td>
       <td class="num">${fmtMcap(e.mcap)}</td><td class="num">${e.eps_forecast ?? "–"}</td><td class="num">${e.eps_actual ?? "–"}</td>
       <td class="num ${sur > 0 ? "pos" : sur < 0 ? "neg" : ""}">${sur == null ? "–" : fmtPct(sur, true)}</td><td>${stage ? `<b>${esc(stage)}</b>` : ""}</td>
       <td><a href="${tvUrl(e)}" target="_blank" rel="noopener">TV</a></td></tr>`;
   }).join("");
+
+  const th = DAY_COLS.map(([k, label, num]) =>
+    `<th data-sort="${k}" class="sortable ${num ? "num" : ""}">${label}${k === key ? (dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("");
+  const opt = (v, label, cur) => `<option value="${v}" ${String(cur) === String(v) ? "selected" : ""}>${label}</option>`;
   panel.classList.remove("hidden");
-  panel.innerHTML = `<b>${esc(state.selDate)}</b>　共 ${list.length} 家
-    <div class="tablewrap" style="margin-top:8px"><table><tr><th>代號</th><th>公司</th><th>時段</th><th class="num">市值</th>
-    <th class="num">EPS預期</th><th class="num">EPS實際</th><th class="num">驚喜</th><th>選股狀態</th><th></th></tr>${rows || '<tr><td colspan="9" class="muted">無符合篩選的財報</td></tr>'}</table></div>`;
+  panel.innerHTML = `<div class="toolbar"><b>${esc(state.selDate)}</b><span>顯示 ${list.length} / ${all.length} 家</span>
+    <label>EPS <select id="dEps">${opt("all", "全部", eps)}${opt("beat", "超預期", eps)}${opt("miss", "不及預期", eps)}${opt("none", "尚無實際值", eps)}</select></label>
+    <label>市值 <select id="dMcap">${opt(0, "不限", minMcap)}${opt(1e9, "≥1B", minMcap)}${opt(1e10, "≥10B", minMcap)}${opt(1e11, "≥100B", minMcap)}</select></label>
+    <label><input type="checkbox" id="dCand" ${onlyCand ? "checked" : ""}> 只看選股名單</label></div>
+    <div class="tablewrap"><table><tr>${th}<th></th></tr>${rows || '<tr><td colspan="9" class="muted">無符合篩選的財報</td></tr>'}</table></div>`;
 }
 
 // ---------- 選股清單 ----------
