@@ -1,0 +1,49 @@
+name: 更新資料並部署 Pages
+
+on:
+  schedule:
+    - cron: "30 7 * * 1-5"   # 日股收盤後（UTC 07:30）
+    - cron: "30 21 * * 1-5"  # 美股收盤後（UTC 21:30）
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 單元測試
+        run: python scripts/test_screen.py
+      - name: 抓資料並選股
+        run: |
+          mkdir -p site/data
+          python scripts/fetch_data.py --out site/data
+          cp -r index.html config.json assets site/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
