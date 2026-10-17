@@ -1,0 +1,16 @@
+{
+  "_說明": "選股參數集中於此，前端與 Python 共用。數值標註（影片）者來自字幕，標註（預設）者字幕未給數字，為本專案暫定值，可自行調整。",
+  "lookback_trading_days": 40,
+  "min_gain_pct": 10,
+  "min_volume_ratio": 2.0,
+  "pullback_max_pct": 25,
+  "min_consolidation_days": 5,
+  "stop_lookback_bars": 3,
+  "risk_adr_mult": 1.0,
+  "dist_drop_pct": 4,
+  "dist_volume_ratio": 1.5,
+  "breakout_fresh_bars": 5,
+  "link_window_days": 4,
+  "us_min_mcap_usd": 2000000000,
+  "regime_index": { "US": "^IXIC", "JP": "^N225" }
+}

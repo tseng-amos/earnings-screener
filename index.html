@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>財報季選股｜美日財報日曆 × PEAD 整理突破</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>財報季選股</h1>
+    <p class="sub">美日財報日曆 × Qullamaggie 跳空／PEAD 整理突破篩選</p>
+  </div>
+  <div class="meta">
+    <div id="regime" class="regime"></div>
+    <div id="updated" class="updated"></div>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="calendar" class="active">財報日曆</button>
+  <button data-tab="screener">選股清單</button>
+  <button data-tab="strategy">交易方式整理</button>
+  <button data-tab="params">參數與限制</button>
+</nav>
+
+<main>
+  <!-- 財報日曆 -->
+  <section id="tab-calendar" class="tab active">
+    <div class="toolbar">
+      <button id="prev" aria-label="上個月">‹</button>
+      <h2 id="monthTitle"></h2>
+      <button id="next" aria-label="下個月">›</button>
+      <button id="today">今天</button>
+      <label><input type="checkbox" id="fUS" checked> 美國</label>
+      <label><input type="checkbox" id="fJP" checked> 日本</label>
+      <label><input type="checkbox" id="fJPAll"> 日本顯示全部上市公司</label>
+      <label><input type="checkbox" id="fCand"> 只看選股名單內</label>
+      <input type="search" id="q" placeholder="搜尋代號／公司">
+    </div>
+    <div class="grid head"><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div><div>日</div></div>
+    <div class="grid" id="calGrid"></div>
+    <div id="dayPanel" class="panel hidden"></div>
+  </section>
+
+  <!-- 選股清單 -->
+  <section id="tab-screener" class="tab">
+    <div class="toolbar" id="stageBar"></div>
+    <div class="toolbar">
+      <label><input type="checkbox" id="sUS" checked> 美國</label>
+      <label><input type="checkbox" id="sJP" checked> 日本</label>
+      <label><input type="checkbox" id="sLinked" checked> 只看確認為財報帶動</label>
+      <label>排序
+        <select id="sSort">
+          <option value="gain_pct">財報日漲幅</option>
+          <option value="volume_ratio">量能倍數</option>
+          <option value="risk_pct">風險幅度（小→大）</option>
+          <option value="dist_to_pivot_pct">距買點（近→遠）</option>
+          <option value="reaction_date">反應日（新→舊）</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint" id="stageHint"></p>
+    <div class="tablewrap"><table id="candTable"></table></div>
+  </section>
+
+  <!-- 交易方式整理 -->
+  <section id="tab-strategy" class="tab"></section>
+
+  <!-- 參數與限制 -->
+  <section id="tab-params" class="tab"></section>
+</main>
+
+<footer>資料每日由 GitHub Actions 自動更新。僅供研究，非投資建議。</footer>
+<script src="assets/strategy.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
