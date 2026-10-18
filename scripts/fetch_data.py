@@ -30,7 +30,8 @@ def to_float(value) -> float | None:
     except (TypeError, ValueError):
         return None
 
-def fetch_us_day(day: date) -> list[dict]:
+def fetch_us_day(day: date) -> list[dict] | None:
+    """回傳當日財報清單；連續 3 次失敗回傳 None（與「當天沒有財報」的空清單區分）。"""
     for attempt in range(3):
         try:
             response = requests.get(NASDAQ_URL, params={"date": day.isoformat()}, headers=UA, timeout=25)
@@ -44,30 +45,43 @@ def fetch_us_day(day: date) -> list[dict]:
         except Exception as exc:
             log(f"Nasdaq {day} 第 {attempt + 1} 次失敗：{exc}")
             time.sleep(2 * (attempt + 1))
-    return []
+    return None
 
-def fetch_events(start: date, end: date, minimum_mcap: float) -> list[dict]:
-    out, day = [], start
+def fetch_events(start: date, end: date, minimum_mcap: float) -> tuple[list[dict], list[str]]:
+    """回傳 (事件清單, 抓取失敗的日期清單)。"""
+    out, failed, day = [], [], start
     while day <= end:
         if day.weekday() < 5:
-            out.extend(event for event in fetch_us_day(day) if (event["mcap"] or 0) >= minimum_mcap)
+            rows = fetch_us_day(day)
+            if rows is None:
+                failed.append(day.isoformat())
+            else:
+                out.extend(event for event in rows if (event["mcap"] or 0) >= minimum_mcap)
             time.sleep(.35)
         day += timedelta(days=1)
-    return out
+    return out, failed
 
 def download_prices(tickers: list[str]) -> dict[str, pd.DataFrame]:
     prices: dict[str, pd.DataFrame] = {}
     for start in range(0, len(tickers), 100):
         group = tickers[start:start + 100]
-        try:
-            data = yf.download(group, period="1y", interval="1d", group_by="ticker", auto_adjust=True, threads=True, progress=False)
+        data = None
+        for attempt in range(2):
+            try:
+                data = yf.download(group, period="1y", interval="1d", group_by="ticker", auto_adjust=True, threads=True, progress=False)
+                break
+            except Exception as exc:
+                log(f"日線下載失敗 {group[0]}…（第 {attempt + 1} 次）：{exc}")
+                time.sleep(3)
+        if data is not None:
             for ticker in group:
-                frame = data[ticker] if isinstance(data.columns, pd.MultiIndex) else data
-                frame = frame.dropna(how="all")
-                if len(frame) > 60:
-                    prices[ticker] = frame
-        except Exception as exc:
-            log(f"日線下載失敗 {group[0]}…：{exc}")
+                try:  # 單一標的缺資料不應拖累同批其他標的
+                    frame = data[ticker] if isinstance(data.columns, pd.MultiIndex) else data
+                    frame = frame.dropna(how="all")
+                    if len(frame) > 60:
+                        prices[ticker] = frame
+                except KeyError:
+                    continue
         log(f"已下載 {min(start + 100, len(tickers))}/{len(tickers)}")
     return prices
 
@@ -89,10 +103,19 @@ def main() -> None:
     month_start = today.replace(day=1)
     calendar_start = (month_start - timedelta(days=1)).replace(day=1)
     calendar_end = (month_start + timedelta(days=62)).replace(day=1) - timedelta(days=1)
-    events = fetch_events(calendar_start, calendar_end, cfg["us_min_mcap_usd"])
+    # 選股要比對回看期內的財報日，日曆起點不可晚於回看期起點，否則月初會漏掉上月中以前的標的
+    lookback_start = today - timedelta(days=int(cfg["lookback_trading_days"] * 1.5) + 7)
+    events, failed_days = fetch_events(min(calendar_start, lookback_start), calendar_end, cfg["us_min_mcap_usd"])
     events.sort(key=lambda x: (x["date"], -(x["mcap"] or 0)))
+    # 資料源整體失效時直接讓工作流程失敗，保留上一次成功部署的網站，而不是發布空資料
+    if not events:
+        log("錯誤：沒有取得任何財報事件，中止（保留上次部署）")
+        sys.exit(1)
     targets = sorted({event["symbol"].replace(".", "-") for event in events})
     prices = download_prices(targets)
+    if not prices:
+        log("錯誤：沒有取得任何價格資料，中止（保留上次部署）")
+        sys.exit(1)
     by_symbol: dict[str, list[dict]] = {}
     for event in events:
         by_symbol.setdefault(event["symbol"].replace(".", "-"), []).append(event)
@@ -114,9 +137,9 @@ def main() -> None:
                       eps_surprise_pct=event.get("eps_surprise_pct"))
         candidates.append(result)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    (out / "calendar.json").write_text(json.dumps({"generated_at": now, "events": events}, ensure_ascii=False), encoding="utf-8")
+    (out / "calendar.json").write_text(json.dumps({"generated_at": now, "fetch_errors": failed_days, "events": events}, ensure_ascii=False), encoding="utf-8")
     (out / "screen.json").write_text(json.dumps({"generated_at": now, "regime": get_regime(), "candidates": candidates}, ensure_ascii=False), encoding="utf-8")
-    log(f"完成：{len(events)} 個財報事件、{len(candidates)} 個候選標的")
+    log(f"完成：{len(events)} 個財報事件、{len(candidates)} 個候選標的、{len(failed_days)} 天日曆抓取失敗")
 
 if __name__ == "__main__":
     main()

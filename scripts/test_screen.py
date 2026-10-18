@@ -10,13 +10,13 @@ from screen import analyze, find_gap_day, market_regime, prepare
 CFG = json.loads((Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
 
 
-def build(post_bars, reaction_low=117):
+def build(post_bars, reaction_low=117, reaction_high=122):
     """前 80 日平盤（價 100、量 1M、振幅約 3%），第 81 日財報跳空 +20%、量 4.8 倍，再接 post_bars。"""
     rows = []
     for i in range(80):
         c = 100 + (i % 3) * 0.2
         rows.append((c, c * 1.015, c * 0.985, c, 1_000_000))
-    rows.append((118, 122, reaction_low, 120, 4_800_000))  # 反應日
+    rows.append((118, reaction_high, reaction_low, 120, 4_800_000))  # 反應日
     rows += post_bars
     idx = pd.bdate_range("2026-01-01", periods=len(rows))
     return prepare(pd.DataFrame(rows, index=idx, columns=["Open", "High", "Low", "Close", "Volume"]))
@@ -47,6 +47,19 @@ def test_breakout():
     r = analyze(d, find_gap_day(d, CFG), CFG)
     assert r["stage"] == "breakout", r
     assert r["breakout_date"] == d.index[-1].strftime("%Y-%m-%d")
+
+
+def test_intraday_touch_is_not_breakout():
+    # 盤中最高價超過整理區高點，但收盤回到區間內：不算突破
+    d = build(calm(8) + [(119, 126, 118, 119, 1_000_000)])
+    assert analyze(d, find_gap_day(d, CFG), CFG)["stage"] != "breakout"
+
+
+def test_reaction_day_range_not_counted_in_pullback():
+    # 反應日自身盤中區間很大（150→105），後續回落僅約 23%，應合格
+    d = build(calm(8), reaction_low=105, reaction_high=150)
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert r["max_pullback_pct"] <= 25 and r["stage"] == "consolidating", r
 
 
 def test_removed():

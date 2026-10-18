@@ -59,11 +59,11 @@ def analyze(d: pd.DataFrame, pos: int, cfg: dict) -> dict:
         out.update(stage="removed", removed_on=broken.index[0].strftime("%Y-%m-%d"), checks=[])
         return out
 
-    # 突破偵測：整理滿 min_days 根後，第一根最高價超過整理區高點
+    # 突破偵測：整理滿 min_days 根後，第一根「收盤」站上整理區高點（盤中碰到不算）
     min_days = cfg["min_consolidation_days"]
     k = None
     for j in range(pos + 1 + min_days, n):
-        if d["High"].iloc[j] > d["High"].iloc[pos + 1:j].max():
+        if d["Close"].iloc[j] > d["High"].iloc[pos + 1:j].max():
             k = j
             break
     cons_end = k if k is not None else n
@@ -79,7 +79,8 @@ def analyze(d: pd.DataFrame, pos: int, cfg: dict) -> dict:
     else:
         seg = d.iloc[pos:cons_end]
         run_high = seg["High"].cummax()
-        max_dd = float(((run_high - seg["Low"]) / run_high * 100).max())
+        # 自反應日最高點起算；反應日當天自身的盤中區間不計入回落
+        max_dd = float(((run_high - seg["Low"]) / run_high * 100).iloc[1:].max())
         ok = max_dd <= cfg["pullback_max_pct"]
         checks.append(_check("pass" if ok else "fail", "回落幅度",
                              f"最大回落 {max_dd:.1f}%（上限 {cfg['pullback_max_pct']}%）"))
