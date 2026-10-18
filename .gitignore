@@ -1,0 +1,4 @@
+data/*.json
+!data/backtest_summary.json
+site/
+__pycache__/

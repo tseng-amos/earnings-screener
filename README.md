@@ -1,25 +1,30 @@
-# 財報季選股
+# 美股財報季工作台
 
-美日財報日曆 + Qullamaggie 跳空／PEAD 整理突破篩選。純靜態網頁，資料由 GitHub Actions 每日更新。
+美股專用的 Qullamaggie 跳空／PEAD 整理突破工作台。包含 Nasdaq 財報日曆、PEAD 選股、人工基本面研究紀錄與均線出場法回測比較。
 
-## 發布到 GitHub Pages
-1. 建立 repo 並推送本專案到 `main`。
-2. Settings → Pages → Source 選 **GitHub Actions**。
-3. Actions →「更新資料並部署 Pages」→ Run workflow（之後每個交易日自動跑兩次）。
+## 功能
 
-## 本機預覽
-```bash
+- **今日行動**：把候選股分成突破確認、整理合格、持續觀察、失效，並依接近買點排序。
+- **選股清單**：直接顯示五項整理條件，而不只依賴滑鼠提示。
+- **研究紀錄**：保存營收、EPS、指引、核心指標、法說確認、來源網址與交易筆記；可匯出／匯入 JSON。
+- **回測比較**：內含 2025 年固定 400 檔大型美股研究樣本，對照 MA10／MA20／MA50 與影片原始版出場規則。
+- **資料健康**：提示資料是否過期、候選股數與最後更新時間。
+
+## 更新資料
+
+```powershell
 pip install -r requirements.txt
-python scripts/test_screen.py     # 選股邏輯單元測試
-python scripts/fetch_data.py      # 產生 data/calendar.json、data/screen.json
-python -m http.server 8000        # 開 http://localhost:8000
+python scripts/fetch_data.py --out data
+python -m http.server 8000
 ```
 
-## 結構
-- `config.json`：篩選參數（前端與 Python 共用）
-- `scripts/screen.py`：選股邏輯；`scripts/fetch_data.py`：抓資料並輸出 JSON
-- `data/universe_jp.txt`：日本掃描清單；`data/jp_earnings_manual.csv`：日本財報日手動補充
-- `assets/`：前端；`.github/workflows/`：更新與部署
+瀏覽 `http://localhost:8000`。網站需要透過 HTTP 伺服器開啟，不能直接雙擊 HTML，否則瀏覽器會拒絕讀取 JSON。
 
-## 資料來源
-美股財報日曆：Nasdaq 公開 API；日本：JPX 決算發表予定日 Excel；價格：Yahoo Finance（yfinance）。
+## 規則
+
+1. 財報反應日收盤漲幅至少 10%，成交量至少為此前 50 日均量的 2 倍。
+2. 財報後至少整理 5 日、最大回撤不超過 25%、不跌破 50 日線、量價收斂且無放量大陰線。
+3. 收盤突破整理高點後，下一交易日開盤才評估進場。
+4. Nasdaq 10 日線在 20 日線上且兩線上升時才視為強勢市場。
+
+數據與訊號僅供研究，不構成投資建議。營收品質、指引與核心指標必須以公司新聞稿和電話會議人工核對。

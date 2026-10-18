@@ -1,0 +1,82 @@
+{
+  "period": "2025-01-01 to 2025-12-31",
+  "sample_size": 400,
+  "comparison": {
+    "ma10": {
+      "trades": 18,
+      "win_rate_pct": 16.7,
+      "avg_return_pct": -2.74,
+      "median_return_pct": -3.17,
+      "total_compounded_pct": -39.9,
+      "best_pct": 3.89,
+      "worst_pct": -7.8
+    },
+    "ma20": {
+      "trades": 18,
+      "win_rate_pct": 33.3,
+      "avg_return_pct": -0.18,
+      "median_return_pct": -2.36,
+      "total_compounded_pct": -8.84,
+      "best_pct": 31.54,
+      "worst_pct": -9.0
+    },
+    "ma50": {
+      "trades": 18,
+      "win_rate_pct": 38.9,
+      "avg_return_pct": 0.02,
+      "median_return_pct": -2.38,
+      "total_compounded_pct": -9.8,
+      "best_pct": 24.02,
+      "worst_pct": -16.8
+    },
+    "original": {
+      "trades": 10,
+      "win_rate_pct": 30.0,
+      "avg_return_pct": -1.17,
+      "median_return_pct": -1.78,
+      "total_compounded_pct": -11.2,
+      "best_pct": 2.2,
+      "worst_pct": -3.14
+    }
+  },
+  "assumptions": {
+    "min_market_cap": 2000000000,
+    "reaction_gain_pct": 10.0,
+    "volume_lookback": 50,
+    "min_volume_ratio": 2.0,
+    "min_consolidation_days": 5,
+    "max_pullback_pct": 25.0,
+    "sma_days": 50,
+    "stop_lookback_days": 3,
+    "adr_days": 20,
+    "risk_adr_mult": 1.0,
+    "distribution_drop_pct": 4.0,
+    "distribution_volume_ratio": 1.5,
+    "allow_distribution_days": 0,
+    "exit_ma_days": 10,
+    "partial_after_days": 5,
+    "partial_fraction": 0.5,
+    "next_earnings_min_profit_pct": 20.0,
+    "require_strong_market": true,
+    "commission_bps_per_side": 5.0,
+    "_說明": "影片沒有給定所有回測細節；本檔把必要假設外顯，調整後重跑即可比較。"
+  },
+  "variants": {
+    "ma10": {
+      "exit_style": "ma",
+      "exit_ma_days": 10
+    },
+    "ma20": {
+      "exit_style": "ma",
+      "exit_ma_days": 20
+    },
+    "ma50": {
+      "exit_style": "ma",
+      "exit_ma_days": 50
+    },
+    "original": {
+      "exit_style": "original",
+      "exit_ma_days": 10
+    }
+  }
+}

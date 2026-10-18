@@ -2,7 +2,6 @@ name: 更新資料並部署 Pages
 
 on:
   schedule:
-    - cron: "30 7 * * 1-5"   # 日股收盤後（UTC 07:30）
     - cron: "30 21 * * 1-5"  # 美股收盤後（UTC 21:30）
   workflow_dispatch:
   push:
@@ -33,6 +32,7 @@ jobs:
         run: |
           mkdir -p site/data
           python scripts/fetch_data.py --out site/data
+          cp data/backtest_summary.json data/backtest_trades.csv site/data/
           cp -r index.html config.json assets site/
       - uses: actions/upload-pages-artifact@v3
         with:

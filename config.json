@@ -12,5 +12,5 @@
   "breakout_fresh_bars": 5,
   "link_window_days": 4,
   "us_min_mcap_usd": 2000000000,
-  "regime_index": { "US": "^IXIC", "JP": "^N225" }
+  "regime_index": { "US": "^IXIC" }
 }
