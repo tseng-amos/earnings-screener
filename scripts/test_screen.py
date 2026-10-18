@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from screen import analyze, find_gap_day, market_regime, prepare
+from screen import analyze, analyze_breakout, ep_quality, find_gap_day, market_regime, momentum_ranks, prepare
 
 CFG = json.loads((Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
 
@@ -22,7 +22,7 @@ def build(post_bars, reaction_low=117, reaction_high=122):
     return prepare(pd.DataFrame(rows, index=idx, columns=["Open", "High", "Low", "Close", "Volume"]))
 
 
-def calm(n, base=118, rng0=0.05):
+def calm(n, base=118, rng0=0.04):
     """整理 n 日：振幅逐日收斂、量縮。"""
     out = []
     for i in range(n):
@@ -49,10 +49,39 @@ def test_breakout():
     assert r["breakout_date"] == d.index[-1].strftime("%Y-%m-%d")
 
 
-def test_intraday_touch_is_not_breakout():
-    # 盤中最高價超過整理區高點，但收盤回到區間內：不算突破
+def test_intraday_cross_is_breakout():
+    # 影片：價格一越過整理區高點就買。盤中最高價越過、收盤回到區間內，仍算突破
     d = build(calm(8) + [(119, 126, 118, 119, 1_000_000)])
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert r["stage"] == "breakout", r
+    assert r["entry_price"] == r["pivot"]  # 開盤在區間內：以買點價成交
+
+
+def test_gap_above_pivot_enters_at_open():
+    # 跳空越過買點：以開盤價成交（不是買點價）
+    d = build(calm(8) + [(130, 131, 128, 129, 1_000_000)])
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert r["stage"] == "breakout" and r["entry_price"] == 130, r
+
+
+def test_not_crossing_is_not_breakout():
+    d = build(calm(8) + [(119, 121, 118, 119, 1_000_000)])
     assert analyze(d, find_gap_day(d, CFG), CFG)["stage"] != "breakout"
+
+
+def test_wide_range_fails_quieter_than_usual():
+    # 整理期每天振幅都大於財報前的平時波動：「波動小於平時」不合格
+    wide = [(118, 124, 112, 118 + (i % 2), 700_000) for i in range(8)]
+    d = build(wide)
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert any(c["label"] == "波動小於平時" and c["status"] == "fail" for c in r["checks"]), r
+
+
+def test_risk_grade():
+    from screen import risk_grade_of
+    assert risk_grade_of(5.0, 5.0, CFG) == "ideal"
+    assert risk_grade_of(5.7, 5.2, CFG) == "acceptable"   # 影片戴爾：風險 5.7% 比 ADR 稍大、仍可接受
+    assert risk_grade_of(8.0, 5.0, CFG) == "too_wide"
 
 
 def test_reaction_day_range_not_counted_in_pullback():
@@ -79,6 +108,77 @@ def test_distribution_fail():
     d = build(bars, reaction_low=100)
     r = analyze(d, find_gap_day(d, CFG), CFG)
     assert any(c["label"] == "無放量大陰線" and c["status"] == "fail" for c in r["checks"]), r
+
+
+def build_bo(today=None, cons_days=24):
+    """影片 B 突破形態：120 日平盤 → 20 日從 100 漲到 200 → 橫盤（低點墊高、振幅收窄、價格在 50 日線上）→ 今天。"""
+    rows = [(100, 102, 98, 100, 1_000_000)] * 120
+    rows += [(100 + (i + 1) * 5 - 2, (100 + (i + 1) * 5) * 1.04, (100 + (i + 1) * 5) * 0.96, 100 + (i + 1) * 5, 2_000_000)
+             for i in range(20)]
+    for i in range(cons_days):
+        c = 175 + 10 * i / cons_days + (3 if i % 2 else -3)
+        rng = 0.10 * (1 - i / (cons_days * 1.6))
+        rows.append((c, c * (1 + rng / 2), c * (1 - rng / 2), c, 1_000_000))
+    pivot = max(r[1] for r in rows[140:])
+    rows.append(today(pivot) if today else (188, pivot - 1, 184, 189, 1_000_000))
+    idx = pd.bdate_range("2026-01-01", periods=len(rows))
+    return prepare(pd.DataFrame(rows, index=idx, columns=["Open", "High", "Low", "Close", "Volume"])), pivot
+
+
+RANK = {"momentum_rank": 99.0, "rank_1m": 80.0, "rank_3m": 99.0, "rank_6m": 99.0}
+
+
+def test_breakout_setup_before_cross():
+    d, pivot = build_bo()
+    r = analyze_breakout(d, CFG, RANK)
+    assert r["stage"] == "setup", r
+    assert r["pivot"] == round(pivot, 2) and r["stop"] < r["pivot"] and r["dist_to_pivot_pct"] > 0
+
+
+def test_breakout_cross_uses_day_low_as_stop():
+    d, pivot = build_bo(lambda p: (p - 1, p + 3, p - 4, p + 2, 2_000_000))
+    r = analyze_breakout(d, CFG, RANK)
+    assert r["stage"] == "breakout" and r["stop"] == round(pivot - 4, 2), r
+
+
+def test_breakout_needs_top_momentum_and_liquidity():
+    d, _ = build_bo()
+    assert analyze_breakout(d, CFG, {**RANK, "momentum_rank": 90.0})["stage"] == "watch"
+    assert analyze_breakout(d, {**CFG, "min_dollar_volume_usd": 1e12}, RANK)["stage"] == "watch"
+
+
+def test_breakout_blocked_near_earnings():
+    d, _ = build_bo()
+    r = analyze_breakout(d, CFG, RANK, days_to_earnings=2)
+    assert r["stage"] == "watch" and any(c["label"] == "距下次財報" and c["status"] == "fail" for c in r["checks"])
+    assert analyze_breakout(d, CFG, RANK, days_to_earnings=20)["stage"] == "setup"
+
+
+def test_breakout_too_short_consolidation_is_pending():
+    d, _ = build_bo(cons_days=6)
+    r = analyze_breakout(d, CFG, RANK)
+    assert r["stage"] == "watch" and any(c["status"] == "pending" for c in r["checks"])
+
+
+def test_breakout_wide_stop_is_skipped():
+    d, _ = build_bo(lambda p: (p - 1, p + 3, p - 40, p + 2, 2_000_000))   # 當天最低點離買點遠超過 ADR
+    r = analyze_breakout(d, CFG, RANK)
+    assert r["risk_grade"] == "too_wide" and r["stage"] == "watch", r
+
+
+def test_momentum_ranks():
+    idx = pd.bdate_range("2026-01-01", periods=200)
+    frames = {f"S{i}": pd.DataFrame({"Close": np.linspace(100, 100 + i, 200)}, index=idx) for i in range(1, 101)}
+    r = momentum_ranks(frames, CFG)
+    assert r["S100"]["momentum_rank"] == 100.0 and r["S1"]["momentum_rank"] == 1.0
+
+
+def test_ep_quality():
+    d = build([])
+    q = ep_quality(d, find_gap_day(d, CFG), {"eps_actual": 1.2, "eps_forecast": 1.0}, CFG)
+    assert q["gap_open_pct"] == 17.8 and q["ep_score"] == 3, q
+    q2 = ep_quality(d, find_gap_day(d, CFG), {}, CFG)
+    assert q2["ep_score"] == 2 and q2["ep_checks"][1]["status"] == "unknown"
 
 
 def test_regime():

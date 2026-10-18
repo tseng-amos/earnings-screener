@@ -1,90 +1,196 @@
+// 美股突破篩選器前端：讀 data/screen.json 與 config.json，渲染兩條篩選線與規則頁。
 "use strict";
-const $ = id => document.getElementById(id);
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-const n = v => v == null || v === "" ? null : Number(v);
-const pct = (v, sign=false) => v == null || Number.isNaN(Number(v)) ? "—" : `${sign && Number(v)>0 ? "+" : ""}${Number(v).toFixed(1)}%`;
-const tv = s => `https://www.tradingview.com/symbols/${encodeURIComponent(String(s).replace("-", "."))}/`; // BRK-B → BRK.B
-const ymd = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; // 本地日期，避免 toISOString 的 UTC 偏移
-const fmtMcap = v => v == null ? "—" : v >= 1e12 ? `${(v/1e12).toFixed(2)}T` : v >= 1e9 ? `${(v/1e9).toFixed(1)}B` : `${(v/1e6).toFixed(0)}M`;
-const store = {get:k=>{try{return JSON.parse(localStorage.getItem(k))||{}}catch{return{}}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true}catch{return false}}};
-const STAGES={breakout:["突破確認","收盤突破整理區高點，隔日開盤才評估進場。","go"],consolidating:["整理合格","五項整理條件通過，等待收盤突破。","watch"],watch:["持續觀察","尚未通過所有整理條件。","wait"],extended:["已延伸","突破時間已過，不依 PEAD 規則追價。","muted"],removed:["已失效","收盤跌破財報反應日低點。","bad"]};
-const state={cfg:null,cal:{events:[]},scr:{candidates:[],regime:{}},bt:{comparison:{},variants:{}},trades:[],stage:"breakout",expanded:new Set(),year:0,month:0,selected:null,btVariant:"ma20",warnings:[],day:{key:"mcap",dir:-1,eps:"all",cand:false},dayList:[]};
-async function load(path){const r=await fetch(path,{cache:"no-cache"});if(!r.ok)throw Error(`${path} (${r.status})`);return r.json()}
-async function loadText(path){const r=await fetch(path,{cache:"no-cache"});if(!r.ok)throw Error(`${path} (${r.status})`);return r.text()}
-function parseCSV(text){const [head,...lines]=text.trim().split(/\r?\n/);const keys=head.replace(/^\uFEFF/,"").split(",");return lines.map(line=>{let q=false,cur="",out=[];for(let i=0;i<line.length;i++){let c=line[i];if(c==='"'){if(q&&line[i+1]==='"'){cur+='"';i++}else q=!q}else if(c===","&&!q){out.push(cur);cur=""}else cur+=c}out.push(cur);return Object.fromEntries(keys.map((k,i)=>[k,out[i]??""]))})}
-function usEvents(){return (state.cal.events||[]).filter(x=>x.market==="US")}
-function candidates(){return (state.scr.candidates||[]).filter(x=>x.market==="US")}
-function priority(c){if(c.stage==="breakout")return 100; if(c.stage==="consolidating")return 80-Math.max(0,n(c.dist_to_pivot_pct)||0);if(c.stage==="watch")return 40;return 0}
-function researchKey(c){return `${c.symbol}:${c.reaction_date||"manual"}`}
-function research(){return store.get("pead-us-research")}
-function setTab(tab){document.querySelectorAll(".tabs button").forEach(x=>x.classList.toggle("active",x.dataset.tab===tab));document.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active",x.id===`tab-${tab}`));if(tab==="research")renderResearch()}
-function renderRegime(){const r=state.scr.regime?.US||{};const label={strong:"市場強：正常倉",caution:"市場小心：縮小倉位",weak:"市場弱：避免新倉",unknown:"市場狀態未知"}[r.status]||"市場狀態未知";$("regime").innerHTML=`<span class="badge ${esc(r.status||"unknown")}">${label}</span>`}
-function dataStatus(error){
-  if(error)return{level:"bad",label:"讀取失敗",detail:error};
-  const d=state.scr.generated_at||state.cal.generated_at;
-  if(!d)return{level:"warn",label:"尚無資料",detail:"資料檔為空，請到 Actions 執行更新"};
-  const t=new Date(d),rawAge=Date.now()-t;let age=rawAge;
-  // 週末不更新：扣掉區間內的週六日，避免週末誤報過期
-  for(let x=new Date(Date.UTC(t.getUTCFullYear(),t.getUTCMonth(),t.getUTCDate()+1));x<Date.now();x.setUTCDate(x.getUTCDate()+1)){if([0,6].includes(x.getUTCDay()))age-=864e5}
-  const hrs=Math.max(0,Math.round(rawAge/36e5)),ago=hrs<48?`${hrs} 小時前`:`${Math.round(hrs/24)} 天前`;
-  const when=`更新 ${t.toLocaleString("zh-TW")}（${ago}）`;
-  if(!usEvents().length)return{level:"warn",label:"財報日曆為空",detail:`來源可能被擋或抓取失敗｜${when}`,when};
-  if(age>36*36e5)return{level:"warn",label:"資料可能過期",detail:when,when};
-  const fe=state.cal.fetch_errors||[];
-  if(fe.length)return{level:"warn",label:"部分日曆缺漏",detail:`${fe.length} 個交易日抓取失敗（${fe.slice(0,3).join("、")}${fe.length>3?"…":""}）｜${when}`,when};
-  if(state.warnings.length)return{level:"warn",label:"部分資料未載入",detail:`${state.warnings.join("、")}｜${when}`,when};
-  return{level:"ok",label:"資料正常",detail:when,when};
-}
-function renderHealth(error){
-  const s=dataStatus(error);
-  $("updated").className=`updated ${s.level}`;
-  $("updated").innerHTML=`<span class="health-dot ${s.level}"></span>${esc(s.label)}｜${esc(s.when||s.detail)}`;
-  $("health").innerHTML=error?`<span class="health-dot bad"></span><b>資料尚未就緒：</b>${esc(error)}。請執行每日更新流程。`:`<span class="health-dot ${s.level}"></span><b>${esc(s.label)}</b><span>美股日曆 ${usEvents().length.toLocaleString()} 筆｜策略候選 ${candidates().length} 檔｜${esc(s.detail)}</span>`;
-}
-function stageCounts(){return Object.keys(STAGES).map(k=>[k,candidates().filter(c=>c.stage===k).length])}
-function renderToday(){const all=candidates(), ready=$("onlyReady").checked;const action=[['breakout','突破確認','隔日開盤前核對風險與研究紀錄'],['consolidating','整理合格','設價格提醒，等待收盤突破'],['watch','持續觀察','等待條件完成'],['removed','失效','不再追蹤']];$("actionCards").innerHTML=action.map(([k,l,d])=>`<button class="action-card ${STAGES[k][2]}" data-goto="${k}"><strong>${all.filter(c=>c.stage===k).length}</strong><span>${l}</span><small>${d}</small></button>`).join("");let rows=all.filter(c=>["breakout","consolidating","watch"].includes(c.stage));if(ready)rows=rows.filter(c=>c.stage==="breakout"||(n(c.dist_to_pivot_pct)!=null&&n(c.dist_to_pivot_pct)<=3));rows.sort((a,b)=>priority(b)-priority(a)||(n(a.dist_to_pivot_pct)||999)-(n(b.dist_to_pivot_pct)||999));$("todayList").innerHTML=rows.slice(0,12).map(c=>signalCard(c)).join("")+(rows.length>12?`<p class="muted">另有 ${rows.length-12} 檔未顯示，請到「選股清單」查看全部。</p>`:"")||'<p class="muted">目前沒有符合條件的美股訊號。</p>'}
-function signalCard(c){const s=STAGES[c.stage]||[c.stage,"","muted"],dist=n(c.dist_to_pivot_pct);const action=c.stage==="breakout"?"突破已確認：明日開盤前檢查倉位與研究紀錄":c.stage==="consolidating"?`距買點 ${pct(dist)}：建立提醒，不預先追價`:"等待整理條件完成";return `<article class="signal-card"><div><span class="pill ${s[2]}">${s[0]}</span><h3>${esc(c.symbol)} <small>${esc(c.name||"")}</small></h3><p>${action}</p></div><div class="signal-stats"><span>反應日 <b>${pct(c.gain_pct,true)}</b></span><span>量能 <b>${c.volume_ratio??"—"}×</b></span><span>距買點 <b>${pct(dist)}</b></span></div><div class="card-actions"><a href="${tv(c.symbol)}" target="_blank" rel="noopener">看圖 ↗</a><span class="research-status ${(research()[researchKey(c)]||{}).done?"done":""}">${(research()[researchKey(c)]||{}).done?"研究完成":"待研究"}</span><button data-research="${esc(researchKey(c))}" title="開啟人工研究紀錄：營收、EPS、指引、核心指標、法說與來源">研究紀錄</button></div></article>`}
-function renderScreener(){const all=candidates(),q=$("sQuery").value.trim().toLowerCase(),linked=$("sLinked").checked,ready=$("sReady").checked;$("stageBar").innerHTML=stageCounts().map(([k,count])=>`<button class="stage ${state.stage===k?"active":""}" data-stage="${k}">${STAGES[k][0]} <b>${count}</b></button>`).join("");$("stageHint").textContent=STAGES[state.stage][1];let rows=all.filter(c=>c.stage===state.stage&&(!linked||c.earnings_linked)&&(!q||`${c.symbol} ${c.name||""}`.toLowerCase().includes(q)));if(ready)rows=rows.filter(c=>c.stage==="breakout"||(n(c.dist_to_pivot_pct)!=null&&n(c.dist_to_pivot_pct)<=3));const sort=$("sSort").value;rows.sort((a,b)=>sort==="priority"?priority(b)-priority(a):sort==="reaction_date"?String(b[sort]||"").localeCompare(String(a[sort]||"")):sort==="dist_to_pivot_pct"?(n(a[sort])??999)-(n(b[sort])??999):(n(b[sort])??-999)-(n(a[sort])??-999));const head='<tr><th>標的／狀態</th><th>財報與反應</th><th>整理條件</th><th>交易計畫</th><th>研究</th></tr>';$("candTable").innerHTML=head+(rows.map(screenRow).join("")||'<tr><td colspan="5" class="muted">目前沒有符合條件的標的。</td></tr>')}
-function checkLine(c){const labels={"回落幅度":"回撤","無放量大陰線":"放量陰線","站穩50日線":"50日線","整理天數":"整理日數","振幅量能收斂":"量縮收斂"};return (c.checks||[]).map(x=>`<span class="check ${x.status}">${esc(labels[x.label]||x.label)} ${x.status==="pass"?"✓":x.status==="warn"?"!":x.status==="fail"?"✕":"…"}</span>`).join(" ")||"—"}
-function screenRow(c){const k=researchKey(c),r=research()[k]||{},is=state.expanded.has(k),s=STAGES[c.stage];const detail=is?`<tr class="detail"><td colspan="5"><p><b>條件說明：</b>${(c.checks||[]).map(x=>`${esc(x.label)}：${esc(x.detail)}`).join("｜")||"無"}</p><p><b>反應日低點：</b>${c.reaction_low??"—"}　<b>最新收盤：</b>${c.last_close??"—"}　<b>最後更新：</b>${esc(c.last_date||"—")}</p></td></tr>`:"";return `<tr class="row" data-expand="${esc(k)}"><td><span class="pill ${s[2]}">${s[0]}</span><b>${esc(c.symbol)}</b><small>${esc(c.name||"")}</small><br><a href="${tv(c.symbol)}" target="_blank" rel="noopener">TradingView ↗</a></td><td>財報：${esc(c.earnings_date||"待確認")} ${esc(c.earnings_time||"")}<br><b class="up">${pct(c.gain_pct,true)}</b>｜量 ${c.volume_ratio??"—"}×<br><small>EPS 驚喜 ${pct(c.eps_surprise_pct,true)}</small></td><td class="checks-inline">${checkLine(c)}</td><td>買點 <b>${c.pivot??"—"}</b><br>距買點 ${pct(c.dist_to_pivot_pct)}<br><small>${c.stage==="breakout"?"訊號確認；隔日才評估":c.stage==="consolidating"?"等收盤突破":"暫不進場"}</small></td><td><span class="research-status ${r.done?"done":""}">${r.done?"研究完成":"待研究"}</span><br><button data-research="${esc(k)}">開啟紀錄</button></td></tr>${detail}`}
-function bindCalendar(){const now=new Date();state.year=now.getFullYear();state.month=now.getMonth();$("prev").onclick=()=>{state.month--;if(state.month<0){state.month=11;state.year--}renderCalendar()};$("next").onclick=()=>{state.month++;if(state.month>11){state.month=0;state.year++}renderCalendar()};$("today").onclick=()=>{let d=new Date();state.year=d.getFullYear();state.month=d.getMonth();renderCalendar()};["fCand","q"].forEach(id=>$(id).addEventListener("input",renderCalendar));$("dayPanel").onclick=e=>{const k=e.target.closest("th[data-sort]")?.dataset.sort;if(!k)return;const d=state.day;d.dir=d.key===k?-d.dir:(k==="symbol"||k==="name"||k==="time"?1:-1);d.key=k;renderDayPanel()};
-  $("dayPanel").oninput=e=>{if(e.target.id==="dEps")state.day.eps=e.target.value;else if(e.target.id==="dCand")state.day.cand=e.target.checked;else return;renderDayPanel()};
-  $("calGrid").onclick=e=>{let cell=e.target.closest("[data-date]");if(cell){state.selected=cell.dataset.date;renderCalendar()}}}
-function renderCalendar(){const y=state.year,m=state.month,query=$("q").value.trim().toLowerCase(),only=$("fCand").checked,cmap=new Map(candidates().map(c=>[c.symbol,c]));let by={};usEvents().filter(e=>(!query||`${e.symbol} ${e.name}`.toLowerCase().includes(query))&&(!only||cmap.has(e.symbol))).forEach(e=>(by[e.date]??=[]).push(e));$("monthTitle").textContent=`${y} 年 ${m+1} 月`;let first=new Date(y,m,1),offset=(first.getDay()+6)%7,days=new Date(y,m+1,0).getDate(),today=ymd(new Date()),html="";for(let i=0;i<Math.ceil((offset+days)/7)*7;i++){let d=new Date(y,m,1-offset+i),key=ymd(d),list=by[key]||[],out=d.getMonth()!==m;html+=`<button class="cal-cell ${out?"out":""} ${key===today?"today":""} ${key===state.selected?"selected":""}" data-date="${key}"><span>${d.getDate()}</span><b>${list.length||""}</b><small>${list.slice(0,2).map(x=>esc(x.symbol)).join(" · ")}${list.length>2?` +${list.length-2}`:""}</small></button>`}$("calGrid").innerHTML=html;renderDayPanel(by[state.selected]||[])}
-const DAY_COLS=[["symbol","代號"],["name","公司"],["time","時段"],["mcap","市值",1],["eps_forecast","EPS預期",1],["eps_actual","EPS實際",1],["eps_surprise_pct","驚喜",1],["stage","選股狀態"]];
-const STAGE_RANK={breakout:5,consolidating:4,watch:3,extended:2,removed:1};
-function renderDayPanel(list){
-  if(list)state.dayList=list;
-  const p=$("dayPanel");
-  if(!state.selected){p.classList.add("hidden");return}
-  p.classList.remove("hidden");
-  const map=new Map(candidates().map(c=>[c.symbol,c])),{key,dir,eps,cand}=state.day;
-  const stageOf=e=>map.get(e.symbol)?.stage,val=e=>key==="stage"?STAGE_RANK[stageOf(e)]:e[key];
-  const rows=state.dayList.filter(e=>(eps==="all"||(eps==="beat"&&e.eps_surprise_pct>0)||(eps==="miss"&&e.eps_surprise_pct<0)||(eps==="none"&&e.eps_surprise_pct==null))&&(!cand||stageOf(e))).sort((a,b)=>{const x=val(a),y=val(b);if(x==null||x==="")return 1;if(y==null||y==="")return-1;return typeof x==="string"?dir*x.localeCompare(y):dir*(x-y)});
-  const opt=(v,l)=>`<option value="${v}" ${eps===v?"selected":""}>${l}</option>`;
-  p.innerHTML=`<div class="section-head compact"><h3>${esc(state.selected)} 財報</h3><span class="muted">顯示 ${rows.length} / ${state.dayList.length} 家</span></div>
-  <div class="filters" style="margin-bottom:10px"><label>EPS<select id="dEps">${opt("all","全部")}${opt("beat","超預期")}${opt("miss","不及預期")}${opt("none","尚無實際值")}</select></label><label><input id="dCand" type="checkbox" ${cand?"checked":""}> 只看策略名單</label></div>
-  <div class="tablewrap"><table class="day-table"><tr>${DAY_COLS.map(([k,l,num])=>`<th data-sort="${k}" class="sortable ${num?"num":""}">${l}${k===key?(dir>0?" ▲":" ▼"):""}</th>`).join("")}</tr>${rows.map(e=>{const c=map.get(e.symbol),sur=e.eps_surprise_pct;return `<tr><td><b>${esc(e.symbol)}</b> <a href="${tv(e.symbol)}" target="_blank" rel="noopener">↗</a></td><td>${esc(e.name||"")}</td><td>${esc(e.time||"時間未定")}</td><td class="num">${fmtMcap(e.mcap)}</td><td class="num">${e.eps_forecast??"—"}</td><td class="num">${e.eps_actual??"—"}</td><td class="num ${sur>0?"up":sur<0?"down":""}">${sur==null?"—":pct(sur,true)}</td><td>${c?STAGES[c.stage][0]:""}</td></tr>`}).join("")||'<tr><td colspan="8" class="muted">沒有符合目前篩選的財報。</td></tr>'}</table></div>`;
+
+const REGIME = {
+  strong: ["good", "大盤強勢", "納指 10 日線在 20 日線上且兩線向上：放手做"],
+  caution: ["warn", "大盤轉弱警戒", "有一條均線走平或拐頭：小心，突破容易失敗"],
+  weak: ["bad", "大盤弱勢", "10 日線在 20 日線下且兩線向下：少做、小倉位試單（不是完全不做）"],
+  unknown: ["dim", "大盤未知", "指數資料未取得"],
+};
+const GRADE = { ideal: ["good", "止損 ≤1×ADR"], acceptable: ["warn", "止損 ≤1.5×ADR"], too_wide: ["bad", "止損太遠・先不做"] };
+const MARK = { pass: "✓", warn: "!", fail: "✗", pending: "…", unknown: "?" };
+
+// 每條線的階段：標籤、顏色、預設是否顯示
+const LANES = {
+  pead: {
+    stages: {
+      breakout: ["突破中", "good", true], consolidating: ["整理合格・待突破", "warn", true], watch: ["觀察", "dim", true],
+      extended: ["突破已逾 5 日", "dim", false], removed: ["已失效", "bad", false],
+    },
+    sorts: { priority: "行動優先度", gain_pct: "反應日漲幅", volume_ratio: "量能倍數", ep_score: "EP 品質", reaction_date: "反應日（新→舊）" },
+  },
+  breakout: {
+    stages: { breakout: ["今日突破", "good", true], setup: ["整理合格・待突破", "warn", true] },
+    sorts: { priority: "行動優先度", momentum_rank: "動能排名", runup_pct: "前段漲幅", dollar_volume_musd: "日成交額" },
+  },
+};
+
+const state = { data: null, cfg: null, filters: {} };
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const num = (v, unit = "", digits = 1) => (v == null || Number.isNaN(v) ? "—" : `${Number(v).toFixed(digits)}${unit}`);
+const pill = (cls, text) => `<span class="pill ${cls}">${esc(text)}</span>`;
+const kv = (label, value) => `<div class="kv"><span>${esc(label)}</span><b>${value}</b></div>`;
+
+// ---------- 通用：排序與卡片 ----------
+
+/** 行動優先度：先看階段，再看離買點多近（越近越前面）。 */
+function priority(item, order) {
+  const rank = order.indexOf(item.stage);
+  return (rank < 0 ? 99 : rank) * 1000 + Math.abs(item.dist_to_pivot_pct ?? 99);
 }
 
-function renderResearch(selected){let cands=candidates(),sel=$("researchSymbol"),keep=typeof selected==="string"&&selected?selected:sel.value;const old=Object.keys(research()).filter(k=>!cands.some(c=>researchKey(c)===k));  // 已不在候選名單、但仍保留紀錄的標的
-  sel.innerHTML='<option value="">選擇標的…</option>'+cands.map(c=>`<option value="${esc(researchKey(c))}">${esc(c.symbol)}｜${esc(c.name||"")}｜${esc(c.reaction_date)}</option>`).join("")+old.map(k=>`<option value="${esc(k)}">${esc(k.replace(":"," ｜反應日 "))}（已不在候選）</option>`).join("");if(keep)sel.value=keep;const k=sel.value;if(!k){$("researchEditor").className="research-editor muted";$("researchEditor").textContent="請選擇候選標的後開始研究。";return}const r=research()[k]||{},c=cands.find(x=>researchKey(x)===k)||{};$("researchEditor").className="research-editor";$("researchEditor").innerHTML=`<h3>${esc(c.symbol||k)} <span class="muted">${esc(c.name||"")}</span></h3><div class="check-grid">${[["revenue","營收明顯優於預期"],["eps","EPS 優於預期"],["guidance","上調／強勁指引"],["metric","核心指標確認"],["call","已閱讀法說／逐字稿"],["done","研究完成，可列入計畫"]].map(([id,l])=>`<label><input type="checkbox" data-r="${id}" ${r[id]?"checked":""}> ${l}</label>`).join("")}</div><label>新聞稿／來源 URL<input data-r="source" type="url" value="${esc(r.source||"")}" placeholder="https://…"></label><label>交易想法與風險<textarea data-r="notes" rows="7" placeholder="為何市場低估？核心數字？催化劑？哪些條件代表判斷錯誤？">${esc(r.notes||"")}</textarea></label><p class="muted">自動儲存在此瀏覽器；請用上方匯出功能備份。</p>`}
-function saveResearch(k,el){if(!k)return;let all=research(),r=all[k]||{};r[el.dataset.r]=el.type==="checkbox"?el.checked:el.value;all[k]=r;if(!store.set("pead-us-research",all)&&!state.warnedStorage){state.warnedStorage=true;alert("瀏覽器無法儲存（可能是無痕模式或空間不足），研究紀錄不會保留，請先用「匯出 JSON」備份。")}}
-function download(name,text){let a=document.createElement("a");a.href=URL.createObjectURL(new Blob([text],{type:"application/json"}));a.download=name;a.click();URL.revokeObjectURL(a.href)}
-function renderBacktest(){const comp=state.bt.comparison||{},minTrades=Math.min(...Object.values(state.bt.comparison||{}).map(v=>v.trades),Infinity),names={ma10:"MA10 均線出場",ma20:"MA20 均線出場",ma50:"MA50 均線出場",original:"影片原始版"};$("backtestMeta").textContent=`${state.bt.period||""}｜固定隨機 ${state.bt.sample_size||"—"} 檔樣本｜單邊手續費 ${state.bt.assumptions?.commission_bps_per_side??"—"} bps${minTrades<30?`｜⚠ 每組僅 ${minTrades} 筆交易，樣本過少，不具統計意義`:""}`;$("backtestCards").innerHTML=Object.entries(comp).map(([k,v])=>`<button class="metric ${state.btVariant===k?"active":""}" data-variant="${k}"><span>${names[k]||k}</span><b>${pct(v.avg_return_pct,true)}</b><small>${v.trades} 筆｜勝率 ${pct(v.win_rate_pct)}｜最佳 ${pct(v.best_pct,true)}</small></button>`).join("");let sel=$("btVariant");sel.innerHTML=Object.keys(comp).map(k=>`<option value="${k}">${names[k]||k}</option>`).join("");sel.value=state.btVariant;renderBtTable()}
-function renderBtTable(){let v=$("btVariant").value||state.btVariant,stateResult=$("btResult").value,q=$("btQuery").value.trim().toLowerCase();state.btVariant=v;let rows=state.trades.filter(x=>x.variant===v&&(!q||x.symbol.toLowerCase().includes(q))&&(stateResult==="all"||(stateResult==="win"?n(x.return_pct)>0:n(x.return_pct)<=0)));$("btTable").innerHTML='<tr><th>標的</th><th>進場</th><th>出場</th><th>出場原因</th><th class="num">報酬</th></tr>'+rows.map(x=>`<tr><td><b>${esc(x.symbol)}</b><br><small>反應日 ${pct(x.reaction_pct,true)}｜量 ${esc(x.volume_ratio)}×</small></td><td>${esc(x.entry_date)}<br>${esc(x.entry)}</td><td>${esc(x.exit_date)}<br>${esc(x.exit)}</td><td>${esc(x.exit_reason)}</td><td class="num ${n(x.return_pct)>0?"up":"down"}">${pct(x.return_pct,true)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">無交易。</td></tr>'}
-function renderMethod(){const c=state.cfg||{};$("methodContent").innerHTML=`<div class="card"><p class="eyebrow">THE RULE SET</p><h2>美股專用 PEAD 規則</h2><ol><li><b>財報反應日：</b>收盤漲幅 ≥ ${c.min_gain_pct??10}%、成交量 ≥ 前 50 日均量 ${c.min_volume_ratio??2} 倍，並確認由財報帶動。</li><li><b>整理：</b>至少 ${c.min_consolidation_days??5} 日、最大回落不超過 ${c.pullback_max_pct??25}%、沒有放量大陰線、收盤站上 50 日線，且振幅與成交量收斂。</li><li><b>進場：</b>收盤突破整理高點後，下一交易日開盤才評估；不追已延伸訊號。</li><li><b>市場濾網：</b>Nasdaq 10 日線高於 20 日線且兩線上升為強勢；弱勢時不開新倉。</li><li><b>出場：</b>此站比較 MA10、MA20、MA50，以及影片原始的前低停損／分批出場做法。</li></ol></div><div class="card"><h3>資料與限制</h3><ul><li>僅保留美股；財報日曆為 Nasdaq 公開資料，價格為 Yahoo Finance 日線。</li><li>營收、指引、核心指標與法說內容必須人工核對並記錄來源。</li><li>Yahoo 與公開財報日曆可能缺漏、延遲或修正；更新失敗時，首頁會顯示資料健康提醒。</li><li>所有訊號為研究清單，不構成投資建議。</li></ul></div>`}
-function bind(){ $("tabs").onclick=e=>{if(e.target.dataset.tab)setTab(e.target.dataset.tab)};$("todayList").onclick=e=>{const r=e.target.closest("[data-research]");if(r){setTab("research");renderResearch(r.dataset.research)}};$("refreshToday").onclick=()=>{renderToday();renderScreener()};$("onlyReady").onchange=renderToday;$("actionCards").onclick=e=>{let k=e.target.closest("[data-goto]")?.dataset.goto;if(k){state.stage=k;setTab("screener");renderScreener()}};["sSort","sLinked","sReady","sQuery"].forEach(id=>$(id).addEventListener("input",renderScreener));$("stageBar").onclick=e=>{let k=e.target.closest("[data-stage]")?.dataset.stage;if(k){state.stage=k;renderScreener()}};$("candTable").onclick=e=>{let r=e.target.closest("[data-research]");if(r){setTab("research");renderResearch(r.dataset.research);return}let row=e.target.closest("[data-expand]");if(row&&!e.target.closest("a,button")){let k=row.dataset.expand;state.expanded.has(k)?state.expanded.delete(k):state.expanded.add(k);renderScreener()}};$("researchSymbol").onchange=renderResearch;$("deleteResearch").onclick=()=>{let k=$("researchSymbol").value;if(k&&confirm("刪除此研究紀錄？")){let a=research();delete a[k];store.set("pead-us-research",a);renderResearch()}};$("researchEditor").oninput=e=>saveResearch($("researchSymbol").value,e.target);$("exportResearch").onclick=()=>download("pead-us-research.json",JSON.stringify(research(),null,2));$("importResearch").onchange=e=>{let f=e.target.files[0];if(!f)return;let rd=new FileReader();rd.onload=()=>{try{const data=JSON.parse(rd.result);if(!data||typeof data!=="object"||Array.isArray(data))throw 0;store.set("pead-us-research",{...research(),...data});renderResearch();alert(`已匯入 ${Object.keys(data).length} 筆（與現有紀錄合併，相同標的以匯入檔為準）`)}catch{alert("檔案格式無法讀取")}};rd.readAsText(f);e.target.value=""};$("backtestCards").onclick=e=>{let v=e.target.closest("[data-variant]")?.dataset.variant;if(v){state.btVariant=v;renderBacktest()}};$("btVariant").addEventListener("input",()=>{state.btVariant=$("btVariant").value;renderBacktest()});["btResult","btQuery"].forEach(id=>$(id).addEventListener("input",renderBtTable));}
-async function init(){
-  bind();
-  const errs=[],get=async(p,f)=>{try{return await f(p)}catch(e){errs.push(e.message);return null}};
-  const [cfg,cal,scr,bt,csv]=await Promise.all([get("config.json",load),get("data/calendar.json",load),get("data/screen.json",load),get("data/backtest_summary.json",load),get("data/backtest_trades.csv",loadText)]);
-  state.cfg=cfg||{};
-  if(cal)state.cal=cal; if(scr)state.scr=scr; if(bt)state.bt=bt; if(csv)state.trades=parseCSV(csv);
-  const fatal=!cal||!scr;  // 日曆或選股資料缺失才算失敗；回測資料缺失只提示
-  if(!fatal)state.warnings=errs;
-  state.stage=Object.keys(STAGES).find(k=>candidates().some(c=>c.stage===k))||"breakout";
-  renderHealth(fatal?errs.join("、"):"");
-  renderRegime();bindCalendar();renderToday();renderScreener();renderCalendar();renderBacktest();renderMethod();
+function checksHtml(title, checks) {
+  const rows = checks.map((c) => `<li class="${c.status}"><span>${MARK[c.status] || "?"}</span><b>${esc(c.label)}</b><span class="detail">${esc(c.detail)}</span></li>`);
+  return `<details><summary>${esc(title)}</summary><ul class="checks">${rows.join("")}</ul></details>`;
 }
+
+function levelsHtml(item) {
+  if (item.pivot == null) return "";
+  // 動能突破尚未越過時，止損只是估計（影片 B：突破當天以當天最低點為止損），不評級
+  const estimate = item.stage === "setup";
+  const [cls, text] = estimate ? ["dim", "突破日以當日低點為準"] : GRADE[item.risk_grade] || ["dim", "—"];
+  const dist = item.stage === "breakout" || item.breakout_date ? "已越過" : `${num(item.dist_to_pivot_pct, "%")}`;
+  return `<div class="levels">${kv("買點（橫盤高點）", num(item.pivot, "", 2))}${kv(estimate ? "止損（估）" : "止損", num(item.stop, "", 2))}
+    ${kv("風險", `${num(item.risk_pct, "%")} <small class="muted">/ ADR ${num(item.adr_pct, "%")}</small>`)}${kv("評級", pill(cls, text))}
+    ${kv("距買點", dist)}${kv("收盤", num(item.last_close, "", 2))}</div>`;
+}
+
+function cardHtml(item, lane) {
+  const [label, cls] = LANES[lane].stages[item.stage] || [item.stage, "dim"];
+  const tv = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(item.symbol.replace("-", "."))}`;
+  const head = `<div class="card-head"><div><a class="sym" href="${tv}" target="_blank" rel="noopener">${esc(item.symbol)}</a>
+    <span class="muted">${esc(item.name)}</span></div><div class="tags">`;
+  if (lane === "pead") {
+    const ep = item.ep_score ?? 0;
+    return `<article class="card ${item.stage === "breakout" ? "hot" : ""}">${head}${pill(cls, label)}${pill(ep === 3 ? "good" : ep === 2 ? "warn" : "dim", `EP ${ep}/3`)}</div></div>
+      <div class="grid">${kv("反應日", esc(item.reaction_date))}${kv("反應日漲幅", num(item.gain_pct, "%"))}${kv("開盤跳空", num(item.gap_open_pct, "%"))}
+      ${kv("量能倍數", num(item.volume_ratio, "×"))}${kv("最大回落", num(item.max_pullback_pct, "%"))}${kv("整理天數", item.cons_days ?? "—")}
+      ${kv("財報", `${esc(item.earnings_date)} <small class="muted">${esc(item.earnings_time)}</small>`)}${kv("EPS 驚喜", num(item.eps_surprise_pct, "%"))}</div>
+      ${levelsHtml(item)}${checksHtml("整理條件（影片 A）", item.checks)}${checksHtml("EP 品質（影片 B）", item.ep_checks)}</article>`;
+  }
+  return `<article class="card ${item.stage === "breakout" ? "hot" : ""}">${head}${pill(cls, label)}${pill("good", `動能 ${num(item.momentum_rank, "", 0)}`)}</div></div>
+    <div class="grid">${kv("前段漲幅", num(item.runup_pct, "%", 0))}${kv("整理天數", item.cons_days)}${kv("高點日", esc(item.peak_date))}
+    ${kv("1／3／6 月漲幅", `${num(item.ret_1m, "", 0)}／${num(item.ret_3m, "", 0)}／${num(item.ret_6m, "", 0)}%`)}
+    ${kv("ADR", num(item.adr_pct, "%"))}${kv("日成交額", num(item.dollar_volume_musd, "M", 0))}${kv("下次財報", esc(item.next_earnings || "未知"))}</div>
+    ${levelsHtml(item)}${checksHtml("突破條件（影片 B）", item.checks)}</article>`;
+}
+
+// ---------- 篩選線頁面 ----------
+
+function renderLane(lane) {
+  const items = state.data[lane];
+  const f = (state.filters[lane] ||= {
+    stages: new Set(Object.entries(LANES[lane].stages).filter(([, v]) => v[2]).map(([k]) => k)), query: "", sort: "priority" });
+  const order = Object.keys(LANES[lane].stages);
+  const counts = Object.fromEntries(order.map((s) => [s, items.filter((x) => x.stage === s).length]));
+
+  const chips = order.map((s) => `<button class="chip ${f.stages.has(s) ? "on" : ""}" data-stage="${s}">${esc(LANES[lane].stages[s][0])} ${counts[s]}</button>`).join("");
+  const sorts = Object.entries(LANES[lane].sorts).map(([k, v]) => `<option value="${k}" ${f.sort === k ? "selected" : ""}>${esc(v)}</option>`).join("");
+  const intro = lane === "pead"
+    ? `<h2>財報後 PEAD／EP</h2><p class="muted">財報大漲且爆量 → 整理收斂 → 突破整理高點才買；以 EP 條件（跳空、EPS、之前沒漲）評品質。</p>`
+    : `<h2>動能突破</h2><p class="muted">1／3／6 個月漲幅全市場前 ${state.cfg.momentum_top_pct}% → 前段大漲後橫盤 → 突破橫盤上沿。股票池 ${state.data.universe_size} 檔${
+        state.data.breakout_total > items.length ? `，符合者 ${state.data.breakout_total} 檔、僅列動能最強 ${items.length} 檔` : ""}。</p>`;
+
+  const shown = items.filter((x) => f.stages.has(x.stage) && (`${x.symbol} ${x.name}`).toLowerCase().includes(f.query.toLowerCase()))
+    .sort((a, b) => (f.sort === "priority" ? priority(a, order) - priority(b, order)
+      : f.sort === "reaction_date" ? b.reaction_date.localeCompare(a.reaction_date) : (b[f.sort] ?? -1) - (a[f.sort] ?? -1)));
+
+  $(`tab-${lane}`).innerHTML = `${intro}<div class="toolbar">${chips}<input class="grow" type="search" placeholder="搜尋代號或公司" value="${esc(f.query)}">
+    <select>${sorts}</select></div>
+    <div class="list">${shown.length ? shown.map((x) => cardHtml(x, lane)).join("") : `<div class="empty">${items.length ? "沒有符合目前篩選的標的" : "目前沒有符合的標的"}</div>`}</div>`;
+
+  const root = $(`tab-${lane}`);
+  root.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => {
+    f.stages.has(b.dataset.stage) ? f.stages.delete(b.dataset.stage) : f.stages.add(b.dataset.stage);
+    renderLane(lane);
+  }));
+  root.querySelector("input").addEventListener("input", (e) => {
+    f.query = e.target.value;
+    const pos = e.target.selectionStart;
+    renderLane(lane);
+    const input = root.querySelector("input");
+    input.focus();
+    input.setSelectionRange(pos, pos);
+  });
+  root.querySelector("select").addEventListener("change", (e) => { f.sort = e.target.value; renderLane(lane); });
+}
+
+// ---------- 頁首：大盤與資料狀態 ----------
+
+function renderHeader() {
+  const r = state.data.regime || {};
+  const [cls, label, hint] = REGIME[r.status] || REGIME.unknown;
+  $("regime").innerHTML = `${pill(cls, label)} <span class="muted small">${esc(hint)}</span>`;
+  const age = state.data.generated_at ? (Date.now() - new Date(state.data.generated_at)) / 864e5 : null;
+  const errors = (state.data.fetch_errors || []).length;
+  const stale = age != null && age > 4;
+  $("updated").innerHTML = state.data.generated_at
+    ? `${stale ? "⚠ 資料已過期 · " : ""}更新 ${esc(new Date(state.data.generated_at).toLocaleString("zh-TW", { hour12: false }))}${errors ? ` · ${errors} 天日曆抓取失敗` : ""}`
+    : "尚未產生資料";
+}
+
+// ---------- 規則頁（數字取自 config.json，避免與程式脫節）----------
+
+function renderRules() {
+  const c = state.cfg;
+  $("tab-rules").innerHTML = `<div class="rules">
+  <h2>規則</h2><p class="muted">來源為兩支 Qullamaggie 影片字幕；影片未給數字的參數標為暫定（見 config.json）。</p>
+
+  <h3>財報後 PEAD／EP（影片 A＋B）</h3>
+  <ol>
+    <li><b>選股</b>：財報反應日收盤漲 ≥${c.min_gain_pct}%、量 ≥ 前 50 日均量 ${c.min_volume_ratio} 倍，且財報日在反應日前 ${c.link_window_days} 天內。反應日後<b>收盤</b>跌破反應日最低價 → 失效。</li>
+    <li><b>整理</b>（五條件）：自高點回落 ≤${c.pullback_max_pct}%；無放量大陰線（跌 ≥${c.dist_drop_pct}% 且量 ≥${c.dist_volume_ratio} 倍）且每天波動小於平時；收盤不破 50 日線；至少橫盤 ${c.min_consolidation_days} 日；近 3 日振幅與量縮小。</li>
+    <li><b>買點與止損</b>：越過整理區最高點（盤中即算，跳空以開盤價）；止損＝突破前最後 ${c.stop_lookback_bars} 日最低點；風險 ≤${c.risk_adr_mult}×ADR 理想、≤${c.risk_adr_max_mult}×ADR 可接受，超過先不做。</li>
+    <li><b>EP 品質</b>（影片 B）：開盤跳空 ≥${c.min_gain_pct}%、EPS 超預期、財報前 ${c.ep_prior_bars} 日漲幅 ≤${c.ep_prior_run_pct}%（沒怎麼漲）。營收年增、指引、最被盯著的數字須人工查新聞稿。</li>
+  </ol>
+
+  <h3>動能突破（影片 B）</h3>
+  <ol>
+    <li><b>強勢股</b>：1／3／6 個月漲幅各自排名，任一最前 ${c.momentum_top_pct}%；ADR ≥${c.min_adr_pct}%；20 日平均成交額 ≥${(c.min_dollar_volume_usd / 1e6).toFixed(0)}M 美元；超過 ${c.bo_max_signals} 檔只列動能最強者。</li>
+    <li><b>形態</b>：前段高點前 ${c.bo_max_runup_bars} 日內自低點漲 ≥${c.bo_min_runup_pct}%；之後橫盤 ${c.bo_min_cons_days}～${c.bo_max_cons_days} 日、低點墊高、振幅收窄、貼著向上均線且收盤不破 50 日線。</li>
+    <li><b>買點與止損</b>：越過橫盤區最高點；突破當天止損＝當天最低點，寬度不得超過 ADR。</li>
+    <li><b>不買</b>：離下次財報 ≤${c.bo_earnings_block_days} 天。</li>
+  </ol>
+
+  <h3>大盤濾網（兩支影片共用）</h3>
+  <ul><li>納指 10 日線在 20 日線上且兩線向上 → 放手做；任一條走平或拐頭 → 小心；10 日線在下且兩線向下 → 少做、小做。</li></ul>
+
+  <h3>買進之後（本站不計算，供參考）</h3>
+  <ul>
+    <li>買進後 3～5 天先賣一半左右，止損移到成本價；剩餘跟 10 日線（快）或 20 日線（慢）、50 日線（更慢），第一次<b>收盤</b>跌破就全賣。</li>
+    <li>下次財報前，剩餘倉位獲利不到 20% 先賣。</li>
+    <li>倉位：單筆虧損 0.25%～1.5% 帳戶；單檔 10～20%（小帳戶 ≤25%）；最多同時 4 檔；不用槓桿；股數＝可虧金額 ÷（買價－止損）。</li>
+  </ul>
+
+  <h3>本站沒有做的</h3>
+  <ul>
+    <li>盤前跳空榜與開盤區間高點（需盤前與分鐘資料）：EP 的「當天買」需自行用券商軟體；本站在收盤後以日線評估，EP 跳空日隔天起轉為 PEAD 觀察。</li>
+    <li>拋物線做空：影片 B 本人也不建議小帳戶做。</li>
+    <li>營收與指引品質：無可靠自動化資料源。</li>
+  </ul></div>`;
+}
+
+// ---------- 啟動 ----------
+
+async function init() {
+  document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("#tabs button, .tab").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    $(`tab-${b.dataset.tab}`).classList.add("active");
+  }));
+  try {
+    [state.data, state.cfg] = await Promise.all([fetch("data/screen.json").then((r) => r.json()), fetch("config.json").then((r) => r.json())]);
+  } catch (e) {
+    $("updated").textContent = "資料讀取失敗：請透過 HTTP 伺服器開啟，且 data/screen.json 需存在";
+    return;
+  }
+  state.data.pead ||= [];
+  state.data.breakout ||= [];
+  renderHeader();
+  renderLane("pead");
+  renderLane("breakout");
+  renderRules();
+}
+
 init();

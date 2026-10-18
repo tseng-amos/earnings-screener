@@ -1,14 +1,35 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="美股財報後漂移 PEAD 選股、研究與回測工作台"><title>美股財報季工作台｜PEAD 選股與回測</title><link rel="stylesheet" href="assets/style.css"></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="美股財報後 PEAD／EP 與動能突破篩選器">
+<title>美股突破篩選器</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
 <body>
-<header class="topbar"><div><p class="eyebrow">US EQUITIES · EARNINGS MOMENTUM</p><h1>美股財報季工作台</h1><p class="sub">財報跳空 → 整理收斂 → 突破 → 以均線管理持倉</p></div><div class="header-meta"><div id="regime" class="regime"></div><p id="updated" class="updated">正在讀取資料…</p></div></header>
-<nav class="tabs" id="tabs" aria-label="主要功能"><button class="active" data-tab="today">今日行動</button><button data-tab="screener">選股清單</button><button data-tab="calendar">財報日曆</button><button data-tab="research">研究紀錄</button><button data-tab="backtest">回測比較</button><button data-tab="method">規則與資料</button></nav>
+<header class="topbar">
+  <div>
+    <p class="eyebrow">QULLAMAGGIE · PEAD · EP · BREAKOUT</p>
+    <h1>美股突破篩選器</h1>
+    <p class="muted">強勢股跳空或回撥橫盤後，向上突破才買</p>
+  </div>
+  <div class="meta">
+    <div id="regime"></div>
+    <p id="updated" class="muted small">讀取資料中…</p>
+  </div>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-tab="pead" class="active">財報後 PEAD／EP</button>
+  <button data-tab="breakout">動能突破</button>
+  <button data-tab="rules">規則</button>
+</nav>
 <main>
-<section id="tab-today" class="tab active"><div id="health" class="health" role="status"></div><div class="section-head"><div><p class="eyebrow">PRIORITY QUEUE</p><h2>今日行動清單</h2></div><button id="refreshToday" class="button secondary">重新整理</button></div><div id="actionCards" class="action-grid"></div><div class="card"><div class="section-head compact"><div><h3>值得立即檢查</h3><p class="muted">依策略階段、距買點與市場環境排序；不代表買入建議。</p></div><label class="switch"><input id="onlyReady" type="checkbox"><span>只看接近買點</span></label></div><div id="todayList" class="cards-list"></div></div></section>
-<section id="tab-screener" class="tab"><div class="section-head"><div><p class="eyebrow">SIGNAL MONITOR</p><h2>PEAD 選股清單</h2></div><p id="stageHint" class="muted"></p></div><div id="stageBar" class="stage-bar" aria-label="策略階段"></div><div class="filters card"><label>排序<select id="sSort"><option value="priority">行動優先度</option><option value="dist_to_pivot_pct">距買點（近→遠）</option><option value="gain_pct">財報日漲幅</option><option value="volume_ratio">量能倍數</option><option value="reaction_date">反應日（新→舊）</option></select></label><label><input id="sLinked" type="checkbox" checked> 僅確認為財報帶動</label><label><input id="sReady" type="checkbox"> 僅顯示接近買點</label><input id="sQuery" type="search" placeholder="搜尋代號或公司"></div><div class="tablewrap"><table id="candTable"></table></div></section>
-<section id="tab-calendar" class="tab"><div class="section-head"><div><p class="eyebrow">EARNINGS AGENDA</p><h2>美股財報日曆</h2></div></div><div class="filters card"><button id="prev" class="button secondary" aria-label="上個月">←</button><h3 id="monthTitle"></h3><button id="next" class="button secondary" aria-label="下個月">→</button><button id="today" class="button secondary">本月</button><label><input id="fCand" type="checkbox"> 僅看策略名單</label><input id="q" type="search" placeholder="搜尋代號或公司"></div><div class="calendar-head"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div><div id="calGrid" class="calendar-grid"></div><div id="dayPanel" class="card hidden"></div></section>
-<section id="tab-research" class="tab"><div class="section-head"><div><p class="eyebrow">HUMAN JUDGMENT</p><h2>研究紀錄</h2><p class="muted">基本面與電話會議資訊無法可靠自動化；在此保留可匯出、可回復的人工判斷。</p></div><div><button id="exportResearch" class="button secondary">匯出 JSON</button><label class="button secondary file-button">匯入 JSON<input id="importResearch" type="file" accept="application/json"></label></div></div><div class="card"><div class="filters"><label>標的<select id="researchSymbol"></select></label><button id="deleteResearch" class="button danger">刪除紀錄</button></div><div id="researchEditor" class="research-editor muted">請先從選股清單選擇標的，或在上方選取。</div></div></section>
-<section id="tab-backtest" class="tab"><div class="section-head"><div><p class="eyebrow">EXIT POLICY COMPARISON</p><h2>回測比較</h2><p id="backtestMeta" class="muted"></p></div></div><div id="backtestCards" class="metric-grid"></div><div class="card"><div class="filters"><label>出場法<select id="btVariant"></select></label><label>結果<select id="btResult"><option value="all">全部</option><option value="win">獲利</option><option value="loss">虧損</option></select></label><input id="btQuery" type="search" placeholder="搜尋代號"></div><div class="tablewrap"><table id="btTable"></table></div></div><p class="disclaimer">此頁預載的是固定 400 檔大型美股的研究樣本，不是全市場投資組合淨值；未處理同時持倉、資金分配、滑價與除權息。</p></section>
-<section id="tab-method" class="tab"><div id="methodContent"></div></section>
-</main><footer>資料來源：Nasdaq 公開財報日曆、Yahoo Finance 日線。僅供研究，非投資建議。</footer><script src="assets/app.js"></script></body></html>
+  <section id="tab-pead" class="tab active"></section>
+  <section id="tab-breakout" class="tab"></section>
+  <section id="tab-rules" class="tab"></section>
+</main>
+<footer>資料：Nasdaq 財報日曆、Yahoo Finance 日線（還原價）。僅供研究，非投資建議；營收、指引與電話會議須人工核對。</footer>
+<script src="assets/app.js"></script>
+</body>
+</html>
