@@ -190,3 +190,9 @@ footer { max-width: 1480px; margin: 0 auto; padding: 0 28px 40px; color: var(--m
 .legend .stop-i { color: var(--ink); }
 
 .prose td:first-child { white-space: nowrap; font-weight: 600; padding-right: 16px; }
+
+/* 大盤三個條件：逐項列出，沒過的標 ✗ */
+.conds { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 4px; }
+.cond::before { font-weight: 700; margin-right: 4px; }
+.cond.pass { color: var(--muted); } .cond.pass::before { content: "✓"; color: var(--accent); }
+.cond.fail { color: var(--ink); font-weight: 600; } .cond.fail::before { content: "✗"; color: var(--bad); }

@@ -367,7 +367,8 @@ def market_regime(close: pd.Series) -> dict:
     else:
         status = "caution"
     return {"status": status, "date": close.index[-1].strftime("%Y-%m-%d"),
-            "ma10_above_ma20": above, "ma10_up": up10, "ma20_up": up20}
+            "ma10_above_ma20": above, "ma10_up": up10, "ma20_up": up20,
+            "ma10": round(float(s10.iloc[-1]), 2), "ma20": round(float(s20.iloc[-1]), 2)}
 
 
 def chart_rows(d: pd.DataFrame, start_pos: int, tail: int = 75) -> list:

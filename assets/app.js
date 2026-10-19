@@ -123,10 +123,17 @@
   function renderRegime() {
     const r = S.data.regime || {}, st = r.status || "unknown", h = S.data.health || {};
     const label = { strong: "大盤強", caution: "大盤要小心", weak: "大盤弱勢", unknown: "大盤未知" }[st];
+    // 影片：看那斯達克 10、20 日線。三個條件逐一列出，哪一項沒過一眼就看得出來（「向上」＝比 3 個交易日前高）
+    const conds = st === "unknown" ? [] : [
+      [r.ma10_above_ma20, "10 日線在 20 日線之上", "10 日線低於 20 日線"],
+      [r.ma10_up, "10 日線向上", "10 日線未向上（走平或下彎）"],
+      [r.ma20_up, "20 日線向上", "20 日線未向上（走平或下彎）"],
+    ];
+    const fails = conds.filter((c) => !c[0]).map((c) => c[2]);
     const advice = {
-      strong: "10 日線在 20 日線之上且兩線向上：正常做。",
-      caution: "兩條線有一條走平或拐頭：縮小倉位，只做最好的。",
-      weak: "10 日線在 20 日線下且兩線向下：突破容易失敗，少做小做；EP 只用小倉位試單。",
+      strong: "三項都過：正常做。",
+      caution: `${fails.join("、")}：縮小倉位，只做最好的。`,
+      weak: "三項都沒過：突破容易失敗，少做小做；EP 只用小倉位試單。",
       unknown: "取不到大盤資料，請自行確認再下單。",
     }[st];
     const idx = String(r.index || "").startsWith("QQQ") ? `${r.index}（替代 ^IXIC）` : (r.index === "^IXIC" ? "那斯達克綜合" : r.index || "");
@@ -137,9 +144,11 @@
     if (h.calendar_failed_days) alerts.push(`財報日曆有 ${h.calendar_failed_days} 天抓取失敗`);
     if (h.universe_source === "events_only") alerts.push("股票清單取得失敗，動能排名只含有財報的標的");
     const gen = new Date(S.data.generated_at).toLocaleString("zh-TW", { hour12: false });
+    const values = r.ma10 != null ? `（10 日線 ${num(r.ma10)}、20 日線 ${num(r.ma20)}）` : "";
     $("#regime").className = `regime ${st}`;
-    $("#regime").innerHTML = `<b>${label}</b>（${esc(idx)}）　${advice}
-      <span class="meta">價格截至 ${esc(S.data.asof)} 美東收盤 · 更新於 ${esc(gen)}</span>
+    $("#regime").innerHTML = `<b>${label}</b>（${esc(idx)}）　${esc(advice)}
+      ${conds.length ? `<span class="conds">${conds.map((c) => `<span class="cond ${c[0] ? "pass" : "fail"}">${c[0] ? c[1] : c[2]}</span>`).join("")}</span>` : ""}
+      <span class="meta">價格截至 ${esc(S.data.asof)} 美東收盤${values} · 更新於 ${esc(gen)}</span>
       ${alerts.map((a) => `<span class="meta alert">⚠ ${esc(a)}</span>`).join("")}`;
   }
 
@@ -361,7 +370,7 @@
         ["財報前", "剩餘倉位獲利不到 20% 就先賣", `距財報 ≤${c.hold_earnings_days} 天且獲利 <${c.hold_min_profit_to_hold_earnings_pct}% → 該賣出`],
       ])}
       <h2>大盤濾網</h2>
-      <p>看那斯達克：<b>10 日線在 20 日線之上且兩線都向上</b>＝正常做；有一條走平或拐頭＝小心、縮小倉位；<b>10 日線在 20 日線下且兩線向下</b>＝突破容易失敗，少做小做（影片提到 2022～2023 年大多靠 EP）。本站在弱勢時把「突破」排到「待突破」之後並加註警示。</p>
+      <p>看那斯達克：<b>10 日線在 20 日線之上且兩線都向上</b>＝正常做；有一條走平或拐頭＝小心、縮小倉位；<b>10 日線在 20 日線下且兩線向下</b>＝突破容易失敗，少做小做（影片提到 2022～2023 年大多靠 EP）。「向上」是指今天的均線比 3 個交易日前高。頁首會逐項列出三個條件，哪一項沒過就直接標出來。本站在弱勢時把「突破」排到「待突破」之後並加註警示。</p>
       <h2>本站刻意不做</h2>
       <p class="src">盤中 EP 判斷（需要分鐘線與盤前資料）、做空（影片也不建議）、通知、回測。營收與指引沒有穩定的免費來源（營收可選配 Finnhub），所以用「人工確認」勾選。<b>標「暫定」的數字影片沒有給，可在 <code>config.json</code> 調整。</b></p>
       <details><summary>全部參數與出處</summary><table>${Object.entries(c).filter(([k]) => !k.startsWith("_") && k !== "key_metrics").map(([k, v]) => `<tr><td><code>${k}</code></td><td class="tbl-n">${esc(JSON.stringify(v))}</td></tr>`).join("")}</table>

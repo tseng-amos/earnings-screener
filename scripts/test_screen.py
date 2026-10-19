@@ -290,7 +290,12 @@ def test_holding_rules():
 
 def test_regime():
     idx = pd.bdate_range("2026-01-01", periods=60)
-    assert market_regime(pd.Series(np.linspace(100, 160, 60), index=idx))["status"] == "strong"
+    r = market_regime(pd.Series(np.linspace(100, 160, 60), index=idx))
+    assert r["status"] == "strong" and r["ma10"] > r["ma20"] > 0 and r["ma10_up"] and r["ma20_up"] and r["ma10_above_ma20"]
+    # 前高後回落、近 10 日反彈：10 日線向上且在 20 日線之上，但 20 日線仍未向上 → 小心，且要能指出是 20 日線
+    rebound = np.concatenate([np.linspace(100, 140, 40), np.linspace(140, 110, 10), 110 + 3.0 * np.arange(1, 11)])
+    r = market_regime(pd.Series(rebound, index=pd.bdate_range("2026-01-01", periods=60)))
+    assert r["status"] == "caution" and r["ma10_above_ma20"] and r["ma10_up"] and not r["ma20_up"], r
     assert market_regime(pd.Series(np.linspace(160, 100, 60), index=idx))["status"] == "weak"
 
 
