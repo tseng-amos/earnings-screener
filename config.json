@@ -5,19 +5,25 @@
     "risk_adr_mult / risk_adr_max_mult": "影片 A：止損距離最好 ≤1 倍 ADR；影片 B：EP 最多放到 1.5 倍（突破單以 1 倍為上限）",
     "stop_lookback_bars": "影片 A 戴爾範例：止損為突破前最後三天最低點",
     "ep_prior_bars / ep_prior_run_pct": "影片 B：EP 之前三到六個月最好沒怎麼漲過；『一波大漲』的界線借用影片 B 突破前段的 30%",
-    "momentum_windows / momentum_top_pct": "影片 B：1／3／6 個月漲幅各排一次，只留全市場最前 1%～2%（取 2%）；排名範圍為本站抓取的標的（市值 ≥ us_min_mcap_usd 且有財報日者）",
+    "momentum_windows / momentum_top_pct": "影片 B：1／3／6 個月漲幅各排一次，只留全市場最前 1%～2%（取 2%）；排名範圍＝Nasdaq 股票清單（價格、成交額預篩）加上有財報的標的",
     "min_adr_pct": "影片 B：ADR（過去 20 天平均日波動幅度），小帳戶至少 5%",
     "min_dollar_volume_usd": "影片 B：日成交額至少帳戶的 50～100 倍、再小也別低於幾百萬美元；取 500 萬（影片以 5 萬美元帳戶×100 倍為例）",
     "bo_lookback_bars / bo_min_runup_pct": "影片 B：過去一到三個月（約 63 日）內有一波至少 30% 的大漲",
     "bo_min_cons_days / bo_max_cons_days": "影片 B：回撥橫盤通常兩週到兩個月（10～42 個交易日）",
     "bo_earnings_block_days": "影片 B：離財報只剩兩三天的形態再好也不買",
     "bo_max_signals": "影片 B：一次掃出超過 50 檔就把門檻提高；本站只顯示動能排名最前的 50 檔",
-    "lookback_trading_days / dist_drop_pct / dist_volume_ratio / breakout_fresh_bars / link_window_days / us_min_mcap_usd / bo_max_runup_bars": "影片未給數字，本專案暫定值，可自行調整"
+    "lookback_trading_days / dist_drop_pct / dist_volume_ratio / breakout_fresh_bars / us_min_mcap_usd / bo_max_runup_bars": "影片未給數字，本專案暫定值，可自行調整",
+    "ep_min_surprise_pct / ep_oneoff_warn / eps_oneoff_warn_pct": "影片 B：EPS 要比預期高出一大截（影片沒給數字，暫定 10%）；影片 A：谷歌 EPS 超預期 217% 其實含帳面收益，所以超預期過大時提醒核對口徑（暫定 100%）",
+    "ep_eps_growth_min_pct / ep_eps_growth_triple_pct": "影片 B：盈利年增最好三位數（≥100%），兩位數裡中等以上也行（暫定 ≥20%）",
+    "hold_default_ma / hold_partial_days / hold_earnings_days / hold_min_profit_to_hold_earnings_pct": "影片 A、B：突破後 3～5 天先賣一部分；剩餘跟 10／20／50 日線、收盤第一次跌破全賣；財報前剩餘倉位獲利不到 20% 先賣",
+    "sizing_*": "影片 B：單筆虧損 0.25%～1.5% 帳戶、單檔 10～20%（10 萬美元以下小帳戶至多 25%）、最多同時 4 檔、不用槓桿；股數＝可虧金額÷（買價－止損）",
+    "universe_* / min_bars / min_price_success_pct": "影片 B：掃全市場；本站以 Nasdaq 股票清單依價格與成交額預篩，再與有財報的標的合併（暫定值）",
+    "chart_bars / max_chart_items": "介面：迷你 K 線的根數與每條線最多附圖的標的數（暫定）",
+    "bo_resistance_band_pct": "影片 B：特斯拉橫盤期間高點壓在 830～840 一帶；寬度門檻暫定 5%（僅提示，不擋訊號）"
   },
   "regime_index": "^IXIC",
   "us_min_mcap_usd": 2000000000,
   "lookback_trading_days": 40,
-  "link_window_days": 4,
   "min_gain_pct": 10,
   "min_volume_ratio": 2.0,
   "pullback_max_pct": 25,
@@ -30,7 +36,11 @@
   "breakout_fresh_bars": 5,
   "ep_prior_bars": 126,
   "ep_prior_run_pct": 30,
-  "momentum_windows": { "1m": 21, "3m": 63, "6m": 126 },
+  "momentum_windows": {
+    "1m": 21,
+    "3m": 63,
+    "6m": 126
+  },
   "momentum_top_pct": 2,
   "min_adr_pct": 5,
   "min_dollar_volume_usd": 5000000,
@@ -40,5 +50,74 @@
   "bo_min_cons_days": 10,
   "bo_max_cons_days": 42,
   "bo_earnings_block_days": 3,
-  "bo_max_signals": 50
+  "bo_max_signals": 50,
+  "universe_min_price": 2,
+  "universe_min_dollar_volume_usd": 3000000,
+  "min_bars": 60,
+  "min_price_success_pct": 80,
+  "ep_min_surprise_pct": 10,
+  "eps_oneoff_warn_pct": 100,
+  "ep_eps_growth_min_pct": 20,
+  "ep_eps_growth_triple_pct": 100,
+  "hold_default_ma": 20,
+  "hold_partial_days": [
+    3,
+    5
+  ],
+  "hold_earnings_days": 2,
+  "hold_min_profit_to_hold_earnings_pct": 20,
+  "sizing_risk_pct_default": 0.5,
+  "sizing_max_position_pct": 20,
+  "sizing_small_account_usd": 100000,
+  "sizing_small_max_position_pct": 25,
+  "sizing_max_positions": 4,
+  "chart_bars": 75,
+  "max_chart_items": 80,
+  "key_metrics": {
+    "NVDA": [
+      "資料中心營收",
+      "指引在新聞稿"
+    ],
+    "MSFT": [
+      "Azure 增速",
+      "指引在電話會"
+    ],
+    "GOOGL": [
+      "雲業務增速",
+      "資本開支",
+      "基本不給指引"
+    ],
+    "GOOG": [
+      "雲業務增速",
+      "資本開支",
+      "基本不給指引"
+    ],
+    "AMZN": [
+      "AWS 增速",
+      "指引在新聞稿"
+    ],
+    "META": [
+      "資本開支",
+      "下季營收指引",
+      "指引在新聞稿"
+    ],
+    "AAPL": [
+      "iPhone",
+      "下季營收指引",
+      "指引在電話會"
+    ],
+    "TSLA": [
+      "汽車毛利率",
+      "資本開支"
+    ],
+    "NFLX": [
+      "營收增速",
+      "利潤率",
+      "已不公布會員數"
+    ],
+    "TSM": [
+      "指引在新聞稿"
+    ]
+  },
+  "bo_resistance_band_pct": 5
 }

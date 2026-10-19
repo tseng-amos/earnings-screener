@@ -1,36 +1,38 @@
-"""抓 Nasdaq 財報日曆與 Yahoo Finance 日線，產生網站資料 data/screen.json。
+"""產生網站資料 data/screen.json。
 
-用法：python scripts/fetch_data.py --out data
-選股邏輯在 screen.py；本檔分成「網路抓取」與純計算的 build_screen（可離線測試）。
+用法：python scripts/fetch_data.py --out data [--cache cache] [--prev prev_screen.json]
+選股邏輯在 screen.py、資料來源在 sources.py；本檔的 build_screen 是純計算（不連網），可離線測試。
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
-import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from screen import (analyze, analyze_breakout, ep_quality, find_gap_day, market_regime,  # noqa: E402
-                    match_event, momentum_ranks, prepare)
+import sources  # noqa: E402
+from screen import (analyze, analyze_breakout, chart_rows, ep_quality, evaluate_holding, find_gap_day,  # noqa: E402
+                    market_regime, match_event, momentum_ranks, prepare)
 
 ROOT = Path(__file__).resolve().parent.parent
-NASDAQ_URL = "https://api.nasdaq.com/api/calendar/earnings"
-UA = {"User-Agent": "Mozilla/5.0", "Accept": "application/json, text/plain, */*"}
-
-
-def log(message: str) -> None:
-    print(message, flush=True)
+log = sources.log
 
 
 # ---------- 純計算（不連網）----------
 
-def build_screen(prices: dict[str, pd.DataFrame], events: list[dict], regime: dict, cfg: dict, today: date) -> dict:
-    """prices：{代號: 日線}；events：財報事件（含過去與未來）；回傳網站用的 screen.json 內容。"""
+def next_earnings_of(history: list[dict], today: date) -> tuple[str | None, int | None]:
+    upcoming = sorted(e["date"] for e in history if e["date"] >= today.isoformat())
+    return (upcoming[0], (date.fromisoformat(upcoming[0]) - today).days) if upcoming else (None, None)
+
+
+def build_screen(prices: dict[str, pd.DataFrame], events: list[dict], regime: dict, cfg: dict, today: date,
+                 holdings: list[dict] | None = None) -> dict:
+    """prices：{代號: 日線}；events：財報事件（含過去與未來）；回傳網站用的 screen.json 內容（尚未加上與昨日的差異）。"""
     by_symbol: dict[str, list[dict]] = {}
     for event in events:
         by_symbol.setdefault(event["symbol"], []).append(event)
@@ -41,136 +43,163 @@ def build_screen(prices: dict[str, pd.DataFrame], events: list[dict], regime: di
     for symbol, d in frames.items():
         history = by_symbol.get(symbol, [])
         name = next((e["name"] for e in history if e.get("name")), "")
+        next_date, days = next_earnings_of(history, today)
 
-        # 財報後線：反應日由財報帶動（影片 A），再以 EP 條件打分（影片 B）
+        # 財報後線：反應日由財報帶動（影片 A；盤前／盤後精確配對），再以 EP 條件打分（影片 B）
         pos = find_gap_day(d, cfg)
         if pos is not None:
-            matched = match_event(d.index[pos], [pd.Timestamp(e["date"]) for e in history], cfg["link_window_days"])
-            if matched is not None:
-                event = next(e for e in history if e["date"] == matched.date().isoformat())
+            event = match_event(d, pos, history)
+            if event is not None:
                 pead.append({**analyze(d, pos, cfg), **ep_quality(d, pos, event, cfg), "symbol": symbol, "name": name,
                              "earnings_date": event["date"], "earnings_time": event.get("time", ""),
-                             "eps_surprise_pct": event.get("eps_surprise_pct")})
+                             "eps_surprise_pct": event.get("eps_surprise_pct"), "next_earnings": next_date})
 
         # 動能突破線（影片 B）：下次財報距離用於「離財報兩三天不買」
-        upcoming = sorted(e["date"] for e in history if e["date"] >= today.isoformat())
-        days = (date.fromisoformat(upcoming[0]) - today).days if upcoming else None
         if symbol in ranks:
             result = analyze_breakout(d, cfg, ranks[symbol], days)
             if result["stage"] in ("breakout", "setup"):
-                breakout.append({**result, "symbol": symbol, "name": name, "next_earnings": upcoming[0] if upcoming else None})
+                breakout.append({**result, "symbol": symbol, "name": name, "next_earnings": next_date})
 
     breakout.sort(key=lambda x: -x["momentum_rank"])
-    return {"regime": regime, "universe_size": len(frames), "breakout_total": len(breakout),
-            "pead": pead, "breakout": breakout[:cfg["bo_max_signals"]]}
+    breakout_total = len(breakout)
+    breakout = breakout[:cfg["bo_max_signals"]]
+
+    # 迷你 K 線資料：PEAD 從反應日前 6 根起、突破線從高點前 20 根起；每條線最多 max_chart_items 檔
+    def attach_chart(items: list[dict], start_of) -> None:
+        for item in items[:cfg["max_chart_items"]]:
+            d = frames[item["symbol"]]
+            item["chart"] = chart_rows(d, start_of(d, item), cfg["chart_bars"])
+    attach_chart(pead, lambda d, c: int(d.index.get_loc(pd.Timestamp(c["reaction_date"]))) - 6)
+    attach_chart(breakout, lambda d, c: int(d.index.get_loc(pd.Timestamp(c["peak_date"]))) - 20)
+
+    held = []
+    for row in holdings or []:
+        d = frames.get(row["symbol"])
+        if d is None:
+            held.append({"symbol": row["symbol"], "status": "nodata", "actions": [{"level": "watch", "text": "沒有取得這檔的價格資料"}]})
+            continue
+        _, days = next_earnings_of(by_symbol.get(row["symbol"], []), today)
+        item = evaluate_holding(d, row, cfg, days)
+        item["chart"] = chart_rows(d, max(int(d.index.searchsorted(pd.Timestamp(row["entry_date"]))) - 10, 0), cfg["chart_bars"])
+        held.append(item)
+
+    count = lambda items: {k: sum(i["stage"] == k for i in items) for k in sorted({i["stage"] for i in items})}  # noqa: E731
+    return {"regime": regime, "universe_size": len(frames), "breakout_total": breakout_total, "pead": pead, "breakout": breakout,
+            "holdings": held, "summary": {"pead": count(pead), "breakout": count(breakout)}}
 
 
-# ---------- 網路抓取 ----------
-
-def to_float(value) -> float | None:
-    try:
-        return float(str(value).replace("$", "").replace(",", "").replace("%", ""))
-    except (TypeError, ValueError):
-        return None
+LANES = (("pead", lambda c: f"{c['symbol']}|{c['reaction_date']}"), ("breakout", lambda c: c["symbol"]))
 
 
-def fetch_us_day(day: date) -> list[dict] | None:
-    """回傳當日財報清單；連續 3 次失敗回傳 None（與「當天沒有財報」的空清單區分）。"""
-    import requests
-    for attempt in range(3):
-        try:
-            response = requests.get(NASDAQ_URL, params={"date": day.isoformat()}, headers=UA, timeout=25)
-            response.raise_for_status()
-            rows = (response.json().get("data") or {}).get("rows") or []
-            return [{
-                "date": day.isoformat(), "symbol": row["symbol"].strip().replace(".", "-"), "name": row.get("name", ""),
-                "time": {"time-pre-market": "盤前", "time-after-hours": "盤後"}.get(row.get("time"), "時間未定"),
-                "mcap": to_float(row.get("marketCap")), "eps_forecast": to_float(row.get("epsForecast")),
-                "eps_actual": to_float(row.get("eps")), "eps_surprise_pct": to_float(row.get("surprise")),
-            } for row in rows if row.get("symbol")]
-        except Exception as exc:
-            log(f"Nasdaq {day} 第 {attempt + 1} 次失敗：{exc}")
-            time.sleep(2 * (attempt + 1))
-    return None
+def annotate_changes(out: dict, prev: dict | None) -> None:
+    """與上一次部署的結果比較：標出新出現、階段改變的標的，以及移出清單的標的（每天只想看「新增了什麼」）。"""
+    out["dropped"] = []
+    out["summary"]["has_prev"] = bool(prev)
+    out["summary"]["new"] = out["summary"]["advanced"] = 0
+    if not prev:
+        return
+    for lane, key in LANES:
+        old = {key(c): c for c in prev.get(lane, [])}
+        for item in out[lane]:
+            before = old.get(key(item))
+            if before is None:
+                item["change"] = "new"
+                out["summary"]["new"] += 1
+            elif before["stage"] != item["stage"]:
+                item.update(change="stage", prev_stage=before["stage"])
+                out["summary"]["advanced"] += 1
+        now = {key(c) for c in out[lane]}
+        out["dropped"] += [{"lane": lane, "symbol": c["symbol"], "prev_stage": c["stage"]} for k, c in old.items() if k not in now]
 
 
-def fetch_events(start: date, end: date, minimum_mcap: float) -> tuple[list[dict], list[str]]:
-    """回傳 (事件清單, 抓取失敗的日期清單)。"""
-    out, failed, day = [], [], start
-    while day <= end:
-        if day.weekday() < 5:
-            rows = fetch_us_day(day)
-            if rows is None:
-                failed.append(day.isoformat())
-            else:
-                out.extend(event for event in rows if (event["mcap"] or 0) >= minimum_mcap)
-            time.sleep(.35)
-        day += timedelta(days=1)
-    return out, failed
-
-
-def download_prices(tickers: list[str]) -> dict[str, pd.DataFrame]:
-    import yfinance as yf
-    prices: dict[str, pd.DataFrame] = {}
-    for start in range(0, len(tickers), 100):
-        group = tickers[start:start + 100]
-        data = None
-        for attempt in range(2):
+def load_holdings(path: Path) -> list[dict]:
+    """data/holdings.csv：symbol,entry_date,entry_price,shares,stop,partial_done,exit_ma,note（無檔或空檔回傳空清單）。"""
+    if not path.exists():
+        return []
+    rows = []
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            symbol = (row.get("symbol") or "").strip().upper().replace(".", "-")
             try:
-                data = yf.download(group, period="1y", interval="1d", group_by="ticker", auto_adjust=True, threads=True, progress=False)
-                break
-            except Exception as exc:
-                log(f"日線下載失敗 {group[0]}…（第 {attempt + 1} 次）：{exc}")
-                time.sleep(3)
-        if data is not None:
-            for ticker in group:
-                try:  # 單一標的缺資料不應拖累同批其他標的
-                    frame = data[ticker] if isinstance(data.columns, pd.MultiIndex) else data
-                    frame = frame.dropna(how="all")
-                    if len(frame) > 130:  # 6 個月動能排名需要約 127 根
-                        prices[ticker] = frame
-                except KeyError:
-                    continue
-        log(f"已下載 {min(start + 100, len(tickers))}/{len(tickers)}")
-    return prices
+                if symbol and row.get("entry_date") and float(row["entry_price"]) > 0:
+                    rows.append({**{k: (v or "").strip() for k, v in row.items() if k}, "symbol": symbol})
+            except (TypeError, ValueError):
+                log(f"持倉檔略過格式錯誤的一列：{row}")
+    return rows
 
 
-def get_regime(index: str) -> dict:
-    import yfinance as yf
-    try:
-        frame = yf.download(index, period="6mo", interval="1d", auto_adjust=True, progress=False)
-        return {"index": index, **market_regime(frame["Close"].squeeze().dropna())}
-    except Exception as exc:
-        log(f"{index} 下載失敗：{exc}")
-        return {"index": index, "status": "unknown"}
-
+# ---------- 主程式 ----------
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=str(ROOT / "data"))
+    parser.add_argument("--cache", default=None, help="快取資料夾；省略則不使用快取")
+    parser.add_argument("--prev", default=None, help="上一次部署的 screen.json（用來標示新增與階段改變）")
     args = parser.parse_args()
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(args.cache) if args.cache else None
     cfg = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
-    today = datetime.now(timezone.utc).date()
+    now = datetime.now(timezone.utc)
+    today = now.date()
     month_start = today.replace(day=1)
     calendar_end = (month_start + timedelta(days=62)).replace(day=1) - timedelta(days=1)
-    # 日曆起點要涵蓋整個股票池的一個財報週期（反應日比對與動能排名都靠它）
-    calendar_start = (month_start - timedelta(days=75)).replace(day=1)
-    events, failed_days = fetch_events(calendar_start, calendar_end, cfg["us_min_mcap_usd"])
+    calendar_start = (month_start - timedelta(days=75)).replace(day=1)   # 要涵蓋整個股票池的一個財報週期
+
+    events, failed_days = sources.fetch_events(calendar_start, calendar_end, cfg["us_min_mcap_usd"],
+                                               cache_dir / "events.json" if cache_dir else None, today)
     # 資料源整體失效時直接讓工作流程失敗，保留上一次成功部署的網站，而不是發布空資料
     if not events:
         log("錯誤：沒有取得任何財報事件，中止（保留上次部署）")
         sys.exit(1)
-    prices = download_prices(sorted({event["symbol"] for event in events}))
-    if not prices:
-        log("錯誤：沒有取得任何價格資料，中止（保留上次部署）")
+    finnhub_filled = sources.enrich_with_finnhub(events, calendar_start, today)
+    events.sort(key=lambda x: (x["date"], -(x.get("mcap") or 0)))
+
+    holdings = load_holdings(ROOT / "data" / "holdings.csv")
+    universe = sources.fetch_universe(cfg["universe_min_price"], cfg["universe_min_dollar_volume_usd"])
+    if universe is None:
+        log("警告：Nasdaq 股票清單取得失敗，動能排名的股票池退回為「有財報的標的」")
+    targets = sorted({e["symbol"] for e in events} | {u["symbol"] for u in universe or []} | {h["symbol"] for h in holdings})
+
+    cache, meta = sources.load_price_cache(cache_dir, today)
+    prices, price_sources = sources.fetch_prices(targets, cfg["min_bars"], cache)
+    trimmed = 0
+    for symbol in list(prices):
+        full = prices[symbol]
+        prices[symbol] = sources.drop_incomplete_bar(full, now)
+        trimmed += len(prices[symbol]) < len(full)
+        if len(prices[symbol]) < cfg["min_bars"]:
+            del prices[symbol]
+    success = len(prices) / max(len(targets), 1) * 100
+    log(f"價格：{len(prices)}/{len(targets)} 檔成功（{success:.0f}%），盤中未完成的最後一根已丟棄 {trimmed} 檔")
+    if not prices or success < cfg["min_price_success_pct"]:
+        log(f"錯誤：價格資料成功率 {success:.0f}% 低於 {cfg['min_price_success_pct']}%，中止（保留上次部署）")
         sys.exit(1)
-    result = build_screen(prices, events, get_regime(cfg["regime_index"]), cfg, today)
-    result.update(generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), fetch_errors=failed_days)
-    (out / "screen.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-    log(f"完成：股票池 {result['universe_size']} 檔、財報後 {len(result['pead'])} 檔、"
-        f"動能突破 {len(result['breakout'])}/{result['breakout_total']} 檔、{len(failed_days)} 天日曆抓取失敗")
+    if cache_dir:
+        sources.save_price_cache(cache_dir, cache, meta, today)
+
+    series, regime_index = sources.fetch_regime_series(cfg["regime_index"])
+    regime = {"index": regime_index, **market_regime(series)} if series is not None else {"index": regime_index, "status": "unknown"}
+
+    result = build_screen(prices, events, regime, cfg, today, holdings)
+    prev = None
+    if args.prev and Path(args.prev).exists():
+        try:
+            prev = json.loads(Path(args.prev).read_text(encoding="utf-8"))
+        except ValueError:
+            prev = None
+    annotate_changes(result, prev)
+    counts = {name: sum(v == name for v in price_sources.values()) for name in ("yahoo", "cache", "stooq", "nasdaq")}
+    result.update(
+        generated_at=now.isoformat(timespec="seconds"),
+        asof=max(f.index[-1] for f in prices.values()).strftime("%Y-%m-%d"),     # 價格資料實際截止日
+        fetch_errors=failed_days,
+        health={"universe_source": "nasdaq" if universe else "events_only", "targets": len(targets), "price_ok": len(prices),
+                "price_sources": counts, "partial_bar_dropped": trimmed, "finnhub_filled": finnhub_filled,
+                "calendar_failed_days": len(failed_days), "price_success_pct": round(success, 1)})
+    (out_dir / "screen.json").write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    log(f"完成：股票池 {result['universe_size']} 檔、財報後 {len(result['pead'])} 檔、動能突破 {len(result['breakout'])}/{result['breakout_total']} 檔、"
+        f"持倉 {len(holdings)} 檔、價格截至 {result['asof']}")
 
 
 if __name__ == "__main__":

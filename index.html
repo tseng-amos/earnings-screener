@@ -1,35 +1,40 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="美股財報後 PEAD／EP 與動能突破篩選器">
-<title>美股突破篩選器</title>
+<title>美股突破篩選簿｜財報後 PEAD／EP 與動能突破</title>
+<meta name="description" content="依 Qullamaggie 兩支影片的條件，每日收盤後掃描美股：財報後 PEAD／EP、動能突破，附倉位試算與持倉賣出提示。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
-<header class="topbar">
+<header class="masthead">
   <div>
-    <p class="eyebrow">QULLAMAGGIE · PEAD · EP · BREAKOUT</p>
-    <h1>美股突破篩選器</h1>
-    <p class="muted">強勢股跳空或回撥橫盤後，向上突破才買</p>
+    <h1>美股突破篩選簿</h1>
+    <p>Qullamaggie 的財報後 PEAD／EP 與動能突破，收盤後掃描、隔天開盤前讀</p>
   </div>
-  <div class="meta">
-    <div id="regime"></div>
-    <p id="updated" class="muted small">讀取資料中…</p>
-  </div>
+  <div id="regime" class="regime" role="status" aria-live="polite">讀取資料中…</div>
 </header>
-<nav class="tabs" id="tabs">
-  <button data-tab="pead" class="active">財報後 PEAD／EP</button>
-  <button data-tab="breakout">動能突破</button>
-  <button data-tab="rules">規則</button>
+
+<nav class="tabs" id="tabs" role="tablist" aria-label="頁面">
+  <button role="tab" data-tab="pead" aria-selected="true">財報後 PEAD／EP</button>
+  <button role="tab" data-tab="breakout" aria-selected="false">動能突破</button>
+  <button role="tab" data-tab="hold" aria-selected="false">持倉<span id="holdFlag" class="flag"></span></button>
+  <button role="tab" data-tab="rules" aria-selected="false">規則</button>
+  <button role="tab" data-tab="settings" aria-selected="false">設定與資料</button>
 </nav>
-<main>
-  <section id="tab-pead" class="tab active"></section>
-  <section id="tab-breakout" class="tab"></section>
-  <section id="tab-rules" class="tab"></section>
+
+<main id="main">
+  <section id="tab-pead" class="tab active" role="tabpanel"></section>
+  <section id="tab-breakout" class="tab" role="tabpanel"></section>
+  <section id="tab-hold" class="tab" role="tabpanel"></section>
+  <section id="tab-rules" class="tab" role="tabpanel"></section>
+  <section id="tab-settings" class="tab" role="tabpanel"></section>
 </main>
-<footer>資料：Nasdaq 財報日曆、Yahoo Finance 日線（還原價）。僅供研究，非投資建議；營收、指引與電話會議須人工核對。</footer>
+<div id="scrim" class="scrim"></div>
+<footer id="foot">資料：Nasdaq 財報日曆與股票清單；價格 Yahoo Finance，缺漏時改用 Stooq、Nasdaq。僅供研究，非投資建議；營收、指引與電話會議須人工核對。</footer>
+<script src="assets/sizing.js"></script>
+<script src="assets/chart.js"></script>
 <script src="assets/app.js"></script>
 </body>
 </html>

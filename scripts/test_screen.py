@@ -5,7 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from screen import analyze, analyze_breakout, ep_quality, find_gap_day, market_regime, momentum_ranks, prepare
+from screen import (analyze, analyze_breakout, chart_rows, ep_quality, evaluate_holding, find_gap_day, market_regime,
+                    match_event, momentum_ranks, prepare)
 
 CFG = json.loads((Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
 
@@ -111,12 +112,12 @@ def test_distribution_fail():
 
 
 def build_bo(today=None, cons_days=24):
-    """影片 B 突破形態：120 日平盤 → 20 日從 100 漲到 200 → 橫盤（低點墊高、振幅收窄、價格在 50 日線上）→ 今天。"""
+    """影片 B 突破形態：120 日平盤 → 20 日從 100 漲到 200 → 平頂橫盤（高點壓在同一帶、低點墊高、振幅收窄、價格在 50 日線上）→ 今天。"""
     rows = [(100, 102, 98, 100, 1_000_000)] * 120
     rows += [(100 + (i + 1) * 5 - 2, (100 + (i + 1) * 5) * 1.04, (100 + (i + 1) * 5) * 0.96, 100 + (i + 1) * 5, 2_000_000)
              for i in range(20)]
     for i in range(cons_days):
-        c = 175 + 10 * i / cons_days + (3 if i % 2 else -3)
+        c = 178 + (3 if i % 2 else -3)   # 影片 B 特斯拉：高點一直壓在同一帶，低點墊高、振幅收窄
         rng = 0.10 * (1 - i / (cons_days * 1.6))
         rows.append((c, c * (1 + rng / 2), c * (1 - rng / 2), c, 1_000_000))
     pivot = max(r[1] for r in rows[140:])
@@ -179,6 +180,112 @@ def test_ep_quality():
     assert q["gap_open_pct"] == 17.8 and q["ep_score"] == 3, q
     q2 = ep_quality(d, find_gap_day(d, CFG), {}, CFG)
     assert q2["ep_score"] == 2 and q2["ep_checks"][1]["status"] == "unknown"
+
+
+def extend(d, bars):
+    """在已 prepare 的日線後面接新的 K 線（開、高、低、收、量），回傳重新 prepare 的結果。"""
+    raw = d[["Open", "High", "Low", "Close", "Volume"]]
+    idx = pd.bdate_range(raw.index[-1] + pd.offsets.BDay(1), periods=len(bars))
+    return prepare(pd.concat([raw, pd.DataFrame(bars, index=idx, columns=raw.columns)]))
+
+
+def test_breakout_memory_keeps_original_pivot_and_stop():
+    # 突破後隔天沒創新高：不可退回「待突破」，買點與止損要維持突破當天的值
+    d, pivot = build_bo(lambda p: (p - 1, p + 3, p - 4, p + 2, 2_000_000))
+    first = analyze_breakout(d, CFG, RANK)
+    d2 = extend(d, [(pivot + 2, pivot + 2.5, pivot, pivot + 1, 1_000_000)])
+    again = analyze_breakout(d2, CFG, RANK)
+    assert again["stage"] == "breakout" and again["days_since_breakout"] == 1, again
+    assert again["pivot"] == first["pivot"] and again["stop"] == first["stop"], (first, again)
+
+
+def test_breakout_memory_expires():
+    d, pivot = build_bo(lambda p: (p - 1, p + 3, p - 4, p + 2, 2_000_000))
+    d2 = extend(d, [(pivot + 2, pivot + 2.5, pivot, pivot + 1, 1_000_000)] * CFG["breakout_fresh_bars"])
+    assert analyze_breakout(d2, CFG, RANK)["stage"] != "breakout"
+
+
+def test_breakout_close_confirmed_flag():
+    d, pivot = build_bo(lambda p: (p - 1, p + 3, p - 4, p - 2, 2_000_000))   # 盤中越過、收盤回到買點下方
+    r = analyze_breakout(d, CFG, RANK)
+    assert r["stage"] == "breakout" and r["close_confirmed"] is False and r["holding"] is False, r
+    d, pivot = build_bo(lambda p: (p - 1, p + 3, p - 4, p + 2, 2_000_000))
+    assert analyze_breakout(d, CFG, RANK)["close_confirmed"] is True
+
+
+def test_breakout_unknown_earnings_date_is_flagged_not_passed():
+    d, _ = build_bo()
+    r = analyze_breakout(d, CFG, RANK, None)
+    assert any(c["label"] == "距下次財報" and c["status"] == "unknown" for c in r["checks"])
+
+
+def test_pead_close_confirmed_flag():
+    d = build(calm(8) + [(119, 126, 118, 119, 1_000_000)])        # 盤中越過、收盤回到區間內
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert r["stage"] == "breakout" and r["close_confirmed"] is False and r["holding"] is False
+    d = build(calm(8) + [(120, 126, 119, 125, 2_000_000)])
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert r["close_confirmed"] is True and r["days_since_breakout"] == 0
+
+
+def test_match_event_uses_report_time():
+    d = build(calm(3))
+    pos = 80                                               # 反應日
+    day = d.index[pos]
+    prev = d.index[pos - 1]
+    assert match_event(d, pos, [{"date": prev.strftime("%Y-%m-%d"), "time": "盤後"}]) is not None   # 前一天盤後 → 次日反應
+    assert match_event(d, pos, [{"date": day.strftime("%Y-%m-%d"), "time": "盤前"}]) is not None    # 當天盤前
+    assert match_event(d, pos, [{"date": prev.strftime("%Y-%m-%d"), "time": "盤前"}]) is None        # 前一天盤前：反應日應是前一天
+    assert match_event(d, pos, [{"date": day.strftime("%Y-%m-%d"), "time": "盤後"}]) is None         # 當天盤後：反應日應是隔天
+    assert match_event(d, pos, [{"date": prev.strftime("%Y-%m-%d"), "time": "時間未定"}]) is not None
+    weekend = (d.index[pos - 5]).strftime("%Y-%m-%d")
+    assert match_event(d, pos, [{"date": weekend, "time": "盤後"}]) is None                         # 太久以前
+
+
+def test_ep_quality_growth_revenue_and_oneoff():
+    d = build([])
+    pos = find_gap_day(d, CFG)
+    q = ep_quality(d, pos, {"eps_actual": 2.5, "eps_forecast": 2.0, "eps_last_year": 1.0, "rev_actual": 120e6, "rev_forecast": 100e6}, CFG)
+    by = {c["label"]: c for c in q["ep_checks"]}
+    assert by["盈利年增"]["status"] == "pass" and "三位數" in by["盈利年增"]["detail"]
+    assert by["營收超預期"]["status"] == "pass" and q["ep_score"] == 5 and q["ep_unknown"] == 0
+    q = ep_quality(d, pos, {"eps_actual": 9.11, "eps_forecast": 2.87, "eps_last_year": 2.0}, CFG)   # 影片 A 谷歌：超預期 217% 含帳面收益
+    assert {c["label"]: c for c in q["ep_checks"]}["EPS 超預期"]["status"] == "warn"
+    q = ep_quality(d, pos, {"eps_actual": 1.1, "eps_forecast": 1.0, "eps_last_year": 1.0}, CFG)
+    assert {c["label"]: c for c in q["ep_checks"]}["盈利年增"]["status"] == "fail"
+
+
+def test_chart_rows_shape():
+    d = build(calm(8))
+    rows = chart_rows(d, 74, 75)
+    assert rows[0][0] == d.index[max(74, len(d) - 75)].strftime("%Y-%m-%d") and len(rows[0]) == 7 and len(rows) <= 75
+
+
+def _hold(entry_date, **kw):
+    return {"symbol": "X", "entry_date": entry_date, "entry_price": 100, "shares": 10, "stop": 95, "partial_done": "N", "exit_ma": 10, **kw}
+
+
+def test_holding_rules():
+    idx = pd.bdate_range("2026-01-01", periods=60)
+    up = pd.DataFrame({"Open": np.linspace(100, 130, 60), "High": np.linspace(101, 131, 60), "Low": np.linspace(99, 129, 60),
+                       "Close": np.linspace(100, 130, 60), "Volume": 1_000_000.0}, index=idx)
+    d = prepare(up)
+    entry = idx[-5].strftime("%Y-%m-%d")                       # 持有 5 天
+    r = evaluate_holding(d, _hold(entry), CFG)
+    assert r["held_days"] == 5 and r["status"] == "partial" and "賣出約一半" in r["actions"][0]["text"]
+    assert evaluate_holding(d, _hold(entry, partial_done="Y", stop=100), CFG)["status"] == "hold"
+    # 收盤跌破 10 日線 → 全賣
+    broke = up.copy()
+    broke.iloc[-1] = [120, 121, 118, 119, 2_000_000]
+    r = evaluate_holding(prepare(broke), _hold(entry, partial_done="Y", stop=100), CFG)
+    assert r["status"] == "sell" and "跌破 10 日線" in r["actions"][0]["text"]
+    # 盤中跌破但收盤站上：只提醒
+    intraday = up.copy()
+    intraday.iloc[-1] = [129, 131, 120, 130.5, 1_000_000]
+    assert evaluate_holding(prepare(intraday), _hold(entry, partial_done="Y", stop=100), CFG)["status"] == "watch"
+    # 財報前：獲利不到 20% 先賣；超過 20% 續抱
+    assert evaluate_holding(d, _hold(entry, partial_done="Y", stop=100, entry_price=125), CFG, days_to_earnings=1)["status"] == "sell"
+    assert evaluate_holding(d, _hold(entry, partial_done="Y", stop=100, entry_price=100), CFG, days_to_earnings=1)["status"] == "watch"
 
 
 def test_regime():
