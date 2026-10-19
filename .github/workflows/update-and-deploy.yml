@@ -34,6 +34,8 @@ jobs:
           python scripts/fetch_data.py --out site/data
           cp data/backtest_summary.json data/backtest_trades.csv site/data/
           cp -r index.html config.json assets site/
+        env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
