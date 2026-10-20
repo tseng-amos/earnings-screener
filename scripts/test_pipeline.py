@@ -129,6 +129,17 @@ def test_main_end_to_end_and_failure_guards():
         assert exc.code == 1
 
 
+def test_report_time_is_inferred_from_reaction_day():
+    rt = fetch_data.report_time
+    assert rt({"date": "2026-10-01", "time": "盤前"}, "2026-10-02") == "盤前"                # 已知的不改
+    assert rt({"date": "2026-10-01", "time": "時間未定"}, "2026-10-01") == "盤前（推定）"      # 當天就反應
+    assert rt({"date": "2026-10-01", "time": "時間未定"}, "2026-10-02") == "盤後（推定）"      # 隔天才反應
+    prices, events = _screen_inputs()
+    events[0]["time"] = "時間未定"
+    out = build_screen(prices, events, {"status": "strong"}, CFG, date(2026, 11, 20))
+    assert out["pead"][0]["earnings_time"] == "盤後（推定）"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

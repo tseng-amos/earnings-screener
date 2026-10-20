@@ -288,6 +288,26 @@ def test_holding_rules():
     assert evaluate_holding(d, _hold(entry, partial_done="Y", stop=100, entry_price=100), CFG, days_to_earnings=1)["status"] == "watch"
 
 
+def test_calm_check_is_tolerant_but_bounded():
+    d = build(calm(8, rng0=0.09))          # 整理期振幅比財報前平時（約 3%）大
+    pos = find_gap_day(d, CFG)
+    def status(mult):
+        r = analyze(d, pos, {**CFG, "calm_fail_adr_mult": mult})
+        return next(c for c in r["checks"] if c["label"] == "波動小於平時")["status"]
+    assert status(1.0) == "fail"           # 嚴格照字面：比 ADR 大就不合格
+    assert status(10.0) == "warn"          # 容忍度放寬：只提醒
+    assert status(CFG["calm_fail_adr_mult"]) in ("warn", "fail")
+
+
+def test_stop_base_is_the_wider_option():
+    d = build(calm(8))
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert r["stop_base"] is not None and r["stop_base"] <= r["stop"]
+    bo, _ = build_bo()
+    b = analyze_breakout(bo, CFG, RANK)
+    assert b["stop_base"] <= b["stop"]
+
+
 def test_regime():
     idx = pd.bdate_range("2026-01-01", periods=60)
     r = market_regime(pd.Series(np.linspace(100, 160, 60), index=idx))

@@ -4,7 +4,7 @@
 
   function candleSvg(rows, opts = {}) {
     if (!rows || rows.length < 3) return "";
-    const W = 660, H = 270, PL = 6, PR = 104, PT = 14, PB = 20, VOL = 44, GAP = 8;
+    const W = 580, H = 300, PL = 6, PR = 118, PT = 16, PB = 22, VOL = 48, GAP = 8;
     const priceH = H - PT - PB - VOL - GAP;
     const levels = (opts.levels || []).filter((l) => l.y != null);
     const lows = rows.map((r) => r[3]), highs = rows.map((r) => r[2]);
@@ -43,7 +43,7 @@
     const placed = [];
     for (const l of [...levels].sort((a, b) => y(a.y) - y(b.y))) {
       let ty = y(l.y) + 3;
-      for (const p of placed) if (Math.abs(ty - p) < 12) ty = p + 12;
+      for (const p of placed) if (Math.abs(ty - p) < 16) ty = p + 16;
       placed.push(ty);
       out += `<line class="ch-level ${esc(l.cls)}" x1="${PL}" x2="${W - PR}" y1="${y(l.y)}" y2="${y(l.y)}"/>` +
              `<text class="ch-label ${esc(l.cls)}" x="${W - PR + 5}" y="${ty}">${esc(l.label)} ${l.y.toFixed(2)}</text>`;

@@ -17,7 +17,7 @@
   };
 
   // ───────── 狀態 ─────────
-  const DEFAULTS = { account: 100000, riskPct: 0.5, maxPosPct: 0, theme: "auto", color: "cn" };
+  const DEFAULTS = { account: 100000, riskPct: 0.5, maxPosPct: 0, theme: "auto", color: "cn", stopMode: "video", riskMaxMult: 0, wide: false };
   const S = {
     cfg: null, data: null, tab: "pead", sel: {}, composing: false,
     ui: LS.get("pb.ui", {}),
@@ -33,6 +33,8 @@
     const r = document.documentElement;
     if (S.set.theme === "auto") r.removeAttribute("data-theme"); else r.setAttribute("data-theme", S.set.theme);
     r.setAttribute("data-color", S.set.color);
+    r.toggleAttribute("data-wide", !!S.set.wide);
+    $$("[data-act=wide]").forEach((b) => b.setAttribute("aria-pressed", String(!!S.set.wide)));
   }
 
   // ───────── 階段與顯示 ─────────
@@ -48,7 +50,7 @@
         consolidating: "五項整理條件合格，等價格越過買點。影片：整理中不要先買，開盤前設好價格提醒。",
         watch: "財報後大漲且爆量，但整理還不夠久或有條件未過。逐檔展開看哪一項未通過。",
         extended: "突破已經一段時間。影片的規則是不追，等下一次整理。",
-        removed: "收盤跌破財報大漲當天的最低點，影片規則：移出觀察名單。",
+        removed: "收盤跌破財報大漲當天的最低點，影片規則：移出觀察名單。失效後 EP 分數、買點都沒有意義，所以這裡改列失效日與跌破幅度。",
       },
     },
     breakout: {
@@ -70,6 +72,17 @@
   }
 
   const daysTo = (iso) => (iso ? Math.round((new Date(iso + "T00:00:00Z") - new Date(S.data.asof + "T00:00:00Z")) / 864e5) : null);
+  // 止損依據：影片預設（突破前最後幾日最低）／整理區最低點（較寬）／自訂價。
+  // 部位會隨止損距離自動縮放（風險金額不變），所以放寬止損＝買得比較少，不是多冒風險。
+  function stopOf(lane, c) {
+    const n = S.notes[LANES[lane].noteKey(c)] || {}, custom = Number(n.stopCustom), entry = c.entry_price ?? c.pivot;
+    let mode = S.set.stopMode === "base" && c.stop_base != null ? "base" : "video", v = mode === "base" ? c.stop_base : c.stop;
+    if (custom > 0 && entry && custom < entry) { mode = "custom"; v = custom; }
+    const risk = entry && v ? (entry - v) / entry * 100 : null, adr = c.adr_pct;
+    const grade = risk == null || !adr ? null : risk <= adr * S.cfg.risk_adr_mult ? "ideal" : risk <= adr * S.set.riskMaxMult ? "acceptable" : "too_wide";
+    return { v, mode, risk, grade, entry };
+  }
+  const timeTag = (c) => esc(c.earnings_time || "").replace("（推定）", "·推定");   // 過去的財報 Nasdaq 不再提供盤前盤後，由反應日推定
   const changeTag = (c) => (c.change === "new" ? '<span class="tag new">新</span>' : c.change === "stage" ? `<span class="tag adv" title="昨天：${esc(STAGE_LABEL[c.prev_stage])}">升級</span>` : "");
   function stageCell(c) {
     let extra = "";
@@ -77,7 +90,7 @@
     if (c.stage === "breakout" && weak()) extra += "·大盤弱";
     return `<span class="stage s-${c.stage}">${STAGE_LABEL[c.stage]}${extra ? ` <small>${extra}</small>` : ""}</span>`;
   }
-  const riskCell = (c) => (c.risk_pct == null ? "—" : `<span class="${c.risk_grade === "too_wide" ? "neg" : ""}">${num(c.risk_pct, 1)}%</span><small class="muted"> /${num(c.adr_pct, 1)}</small>`);
+  const riskCellFor = (lane) => (c) => { const s = stopOf(lane, c); return s.risk == null ? "—" : `<span class="${s.grade === "too_wide" ? "neg" : ""}">${num(s.risk, 1)}%</span><small class="muted"> /${num(c.adr_pct, 1)}</small>`; };
   const distCell = (c) => (c.dist_to_pivot_pct == null ? "—" : c.dist_to_pivot_pct <= 0 ? "已越過" : `+${num(c.dist_to_pivot_pct, 1)}%`);
   const symCell = (c) => `<span class="sym">${esc(c.symbol)}</span>${changeTag(c)}<span class="nm">${esc(c.name || "")}</span>`;
 
@@ -85,14 +98,24 @@
     pead: [
       { k: "symbol", label: "代號", render: symCell, val: (c) => c.symbol, dir: 1 },
       { k: "stage", label: "階段", render: stageCell, val: (c) => priority("pead", c) },
-      { k: "reaction_date", label: "反應日", cls: "lo", render: (c) => `${md(c.reaction_date)} <small class="muted">${esc(c.earnings_time || "")}</small>`, val: (c) => c.reaction_date },
+      { k: "reaction_date", label: "反應日", cls: "lo", render: (c) => `${md(c.reaction_date)} <small class="muted">${timeTag(c)}</small>`, val: (c) => c.reaction_date },
       { k: "gain_pct", label: "漲幅", num: 1, render: (c) => `<span class="up">${pct(c.gain_pct, 1, true)}</span>`, val: (c) => c.gain_pct },
       { k: "volume_ratio", label: "量", num: 1, cls: "lo", render: (c) => `${num(c.volume_ratio, 1)}×`, val: (c) => c.volume_ratio },
-      { k: "ep", label: "EP", num: 1, render: (c) => `${c.ep_score ?? "—"}/5${c.ep_unknown ? `<small class="muted"> ?${c.ep_unknown}</small>` : ""}`, val: (c) => c.ep_score },
+      { k: "ep", label: "EP", num: 1, title: "影片 B 的 EP 條件通過幾項（共 5 項：開盤跳空、EPS 超預期、盈利年增、營收超預期、財報前沒怎麼漲）。「待確認」＝資料不足，要人工查。", render: (c) => `${c.ep_score ?? "—"}/5${c.ep_unknown ? `<small class="muted"> 待確認${c.ep_unknown}</small>` : ""}`, val: (c) => c.ep_score },
       { k: "pivot", label: "買點", num: 1, cls: "lo", render: (c) => num(c.pivot), val: (c) => c.pivot },
-      { k: "stop", label: "止損", num: 1, cls: "lo", render: (c) => num(c.stop), val: (c) => c.stop },
-      { k: "risk", label: "風險／ADR", num: 1, render: riskCell, val: (c) => c.risk_pct, dir: 1 },
+      { k: "stop", label: "止損", num: 1, cls: "lo", render: (c) => num(stopOf("pead", c).v), val: (c) => stopOf("pead", c).v },
+      { k: "risk", label: "風險／ADR", num: 1, title: "買點到止損的距離，除以財報前平時一天的平均振幅（ADR）。影片：不超過 1 倍理想、1.5 倍可接受。", render: riskCellFor("pead"), val: (c) => stopOf("pead", c).risk, dir: 1 },
       { k: "dist", label: "距買點", num: 1, render: distCell, val: (c) => c.dist_to_pivot_pct, dir: 1 },
+    ],
+    pead_removed: [
+      { k: "symbol", label: "代號", render: symCell, val: (c) => c.symbol, dir: 1 },
+      { k: "stage", label: "階段", render: stageCell, val: (c) => priority("pead", c) },
+      { k: "reaction_date", label: "反應日", render: (c) => `${md(c.reaction_date)} <small class="muted">${timeTag(c)}</small>`, val: (c) => c.reaction_date },
+      { k: "gain_pct", label: "漲幅", num: 1, render: (c) => `<span class="up">${pct(c.gain_pct, 1, true)}</span>`, val: (c) => c.gain_pct },
+      { k: "removed_on", label: "失效日", num: 1, render: (c) => md(c.removed_on), val: (c) => c.removed_on },
+      { k: "reaction_low", label: "反應日低點", num: 1, title: "影片 A：收盤跌破財報大漲當天的最低點就移出名單。", render: (c) => num(c.reaction_low), val: (c) => c.reaction_low },
+      { k: "last_close", label: "最新收盤", num: 1, render: (c) => num(c.last_close), val: (c) => c.last_close },
+      { k: "below", label: "距反應日低點", num: 1, render: (c) => { const v = (c.last_close / c.reaction_low - 1) * 100; return `<span class="${v >= 0 ? "up" : "down"}">${pct(v, 1, true)}</span>`; }, val: (c) => c.last_close / c.reaction_low },
     ],
     breakout: [
       { k: "symbol", label: "代號", render: symCell, val: (c) => c.symbol, dir: 1 },
@@ -102,8 +125,8 @@
       { k: "cons_days", label: "整理日", num: 1, cls: "lo", render: (c) => c.cons_days, val: (c) => c.cons_days },
       { k: "adr_pct", label: "ADR", num: 1, cls: "lo", render: (c) => pct(c.adr_pct, 1), val: (c) => c.adr_pct },
       { k: "pivot", label: "買點", num: 1, render: (c) => num(c.pivot), val: (c) => c.pivot },
-      { k: "stop", label: "止損", num: 1, cls: "lo", render: (c) => num(c.stop), val: (c) => c.stop },
-      { k: "risk", label: "風險", num: 1, render: riskCell, val: (c) => c.risk_pct, dir: 1 },
+      { k: "stop", label: "止損", num: 1, cls: "lo", render: (c) => num(stopOf("breakout", c).v), val: (c) => stopOf("breakout", c).v },
+      { k: "risk", label: "風險／ADR", num: 1, render: riskCellFor("breakout"), val: (c) => stopOf("breakout", c).risk, dir: 1 },
       { k: "dist", label: "距買點", num: 1, render: distCell, val: (c) => c.dist_to_pivot_pct, dir: 1 },
       { k: "earn", label: "距財報", num: 1, cls: "lo", render: (c) => (c.next_earnings ? `${daysTo(c.next_earnings)}天` : '<span class="muted">未知</span>'), val: (c) => daysTo(c.next_earnings) },
     ],
@@ -118,6 +141,8 @@
       { k: "earn", label: "距財報", num: 1, cls: "lo", render: (c) => (c.days_to_earnings == null ? '<span class="muted">未知</span>' : `${c.days_to_earnings}天`), val: (c) => c.days_to_earnings },
     ],
   };
+
+  const colsFor = (lane) => (lane === "pead" && ui("pead").stage === "removed" ? COLS.pead_removed : COLS[lane]);
 
   // ───────── 頁首：大盤與資料狀態 ─────────
   function renderRegime() {
@@ -160,6 +185,7 @@
         <div class="stages" id="stages-${lane}"></div>
         <input type="search" id="q-${lane}" placeholder="搜尋代號或公司" aria-label="搜尋">
         <span class="spacer"></span>
+        <button class="btn" data-act="wide" aria-pressed="false" title="把右側詳情欄加寬，圖表與文字更大">加寬詳情</button>
         <button class="btn" data-act="copy" data-lane="${lane}" title="貼進 TradingView 自選股的匯入欄">複製自選股</button>
         <button class="btn" data-act="csv" data-lane="${lane}" title="買點、止損與建議股數，拿去設價格提醒">下載提醒價 CSV</button>
       </div>
@@ -175,7 +201,7 @@
     const u = ui(lane), q = (u.q || "").trim().toLowerCase();
     let items = LANES[lane].items().filter((c) => c.stage === u.stage);
     if (q) items = items.filter((c) => `${c.symbol} ${c.name || ""}`.toLowerCase().includes(q));
-    const col = COLS[lane].find((x) => x.k === u.sort) || COLS[lane][1];
+    const col = colsFor(lane).find((x) => x.k === u.sort) || colsFor(lane)[1];
     const dir = u.sort ? u.dir : -1;
     return items.sort((a, b) => {
       const x = col.val(a), y = col.val(b);
@@ -195,8 +221,8 @@
 
     const rows = visibleItems(lane);
     if (!rows.some((c) => L.id(c) === S.sel[lane])) S.sel[lane] = rows[0] ? L.id(rows[0]) : null;
-    const cols = COLS[lane];
-    $(`#list-${lane}`).innerHTML = `<thead><tr>${cols.map((c) => `<th data-k="${c.k}" class="${c.num ? "num" : ""} ${c.cls || ""}" aria-sort="${u.sort === c.k ? (u.dir > 0 ? "ascending" : "descending") : "none"}">${c.label}${u.sort === c.k ? (u.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
+    const cols = colsFor(lane);
+    $(`#list-${lane}`).innerHTML = `<thead><tr>${cols.map((c) => `<th data-k="${c.k}"${c.title ? ` title="${esc(c.title)}"` : ""} class="${c.num ? "num" : ""} ${c.cls || ""}" aria-sort="${u.sort === c.k ? (u.dir > 0 ? "ascending" : "descending") : "none"}">${c.label}${u.sort === c.k ? (u.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
       <tbody>${rows.map((c) => `<tr class="row s-${c.stage} ${L.id(c) === S.sel[lane] ? "sel" : ""} ${(c.stage === "breakout" && weak()) || c.stage === "removed" || c.stage === "extended" ? "dim" : ""}" tabindex="0" data-id="${esc(L.id(c))}">${cols.map((x) => `<td class="${x.num ? "num" : ""} ${x.cls || ""}">${x.render(c)}</td>`).join("")}</tr>`).join("") ||
         `<tr class="empty"><td colspan="${cols.length}">這個階段目前沒有標的。</td></tr>`}</tbody>`;
     renderDetail(lane);
@@ -233,17 +259,17 @@
     return `尚未合格：${fails.join("、") || "—"}${pend.length ? `；待觀察：${pend.join("、")}` : ""}。`;
   }
 
-  function sizingHtml(c) {
-    const cfg = S.cfg, st = S.set;
-    const entry = c.entry_price ?? c.pivot, maxPos = st.maxPosPct || Sizing.defaultMaxPosPct(st.account, cfg);
-    const p = Sizing.position({ account: st.account, riskPct: st.riskPct, entry, stop: c.stop, maxPosPct: maxPos });
+  function sizingHtml(lane, c) {
+    const cfg = S.cfg, st = S.set, sp = stopOf(lane, c);
+    const entry = sp.entry, maxPos = st.maxPosPct || Sizing.defaultMaxPosPct(st.account, cfg);
+    const p = Sizing.position({ account: st.account, riskPct: st.riskPct, entry, stop: sp.v, maxPosPct: maxPos });
     if (!p) return "";
     const warns = [];
     if (p.capped) warns.push(`受單檔上限 ${maxPos}% 限制，實際只冒帳戶 ${num(p.lossPct, 2)}% 的風險。`);
-    if (c.risk_grade === "too_wide") warns.push("止損距離超過 1.5 倍 ADR：影片建議不要買，或等整理再收斂。");
+    if (sp.grade === "too_wide") warns.push(`止損距離超過 ${st.riskMaxMult} 倍 ADR：影片建議不要買，或等整理再收斂；放寬止損不會多冒風險，但股數會變少。`);
     if (p.shares === 0) warns.push("算出 0 股：止損離買點太遠或單筆風險設太低。");
     return `<h3>倉位試算（影片 B）</h3><div class="sizing">以帳戶 ${usd(st.account)}、單筆風險 ${st.riskPct}% 計，
-      ${c.entry_price ? "進場價" : "以買點估算"} ${num(entry)}、止損 ${num(c.stop)}（${num(p.stopPct, 1)}%）：
+      ${c.entry_price ? "進場價" : "以買點估算"} ${num(entry)}、止損 ${num(sp.v)}（${{ video: "影片預設", base: "整理區最低點", custom: "自訂" }[sp.mode]}，距離 ${num(p.stopPct, 1)}%）：
       買 <b>${p.shares.toLocaleString()}</b> 股，約 ${usd(p.cost)}（佔帳戶 ${num(p.posPct, 1)}%），止損觸發約虧 ${usd(p.lossUsd)}。
       ${warns.map((w) => `<span class="warn">${esc(w)}</span>`).join("")}
       <span class="warn" style="color:var(--muted)">影片：最多同時持有 ${cfg.sizing_max_positions} 檔、不用槓桿；一次買足，不加碼攤平。</span></div>`;
@@ -261,22 +287,42 @@
   }
 
   function levelsHtml(lane, c) {
-    const row = (a, b) => `<dt>${a}</dt><dd>${b}</dd>`;
-    const common = row("買點", num(c.pivot)) + row("止損", num(c.stop)) + row("風險", c.risk_pct == null ? "—" : `${num(c.risk_pct, 1)}%`) + row("平時日波動", pct(c.adr_pct, 1));
+    const row = (a, b) => `<dt>${a}</dt><dd>${b}</dd>`, sp = stopOf(lane, c);
+    const common = row("買點", num(c.pivot)) + row("止損", num(sp.v)) + row("風險", sp.risk == null ? "—" : `${num(sp.risk, 1)}%`) + row("平時日波動", pct(c.adr_pct, 1));
     const own = lane === "pead"
-      ? row("進場價", c.entry_price == null ? "—" : num(c.entry_price)) + row("評級", c.risk_grade ? RISK_LABEL[c.risk_grade] : "—") + row("反應日低點", num(c.reaction_low)) + row("最大回落", pct(c.max_pullback_pct, 1)) + row("整理天數", `${c.cons_days ?? 0} 日`) + row("下次財報", c.next_earnings ? `${md(c.next_earnings)}（${daysTo(c.next_earnings)}天）` : "未知")
-      : row("進場價", c.entry_price == null ? "—" : num(c.entry_price)) + row("評級", c.risk_grade ? RISK_LABEL[c.risk_grade] : "—") + row("動能 1／3／6月", `${num(c.rank_1m, 0)}／${num(c.rank_3m, 0)}／${num(c.rank_6m, 0)}`) + row("前段漲幅", pct(c.runup_pct, 0)) + row("整理天數", `${c.cons_days} 日`) + row("下次財報", c.next_earnings ? `${md(c.next_earnings)}（${daysTo(c.next_earnings)}天）` : "未知");
+      ? row("進場價", c.entry_price == null ? "—" : num(c.entry_price)) + row("評級", sp.grade ? RISK_LABEL[sp.grade] : "—") + row("反應日低點", num(c.reaction_low)) + row("最大回落", pct(c.max_pullback_pct, 1)) + row("整理天數", `${c.cons_days ?? 0} 日`) + row("下次財報", c.next_earnings ? `${md(c.next_earnings)}（${daysTo(c.next_earnings)}天）` : "未知")
+      : row("進場價", c.entry_price == null ? "—" : num(c.entry_price)) + row("評級", sp.grade ? RISK_LABEL[sp.grade] : "—") + row("動能 1／3／6月", `${num(c.rank_1m, 0)}／${num(c.rank_3m, 0)}／${num(c.rank_6m, 0)}`) + row("前段漲幅", pct(c.runup_pct, 0)) + row("整理天數", `${c.cons_days} 日`) + row("下次財報", c.next_earnings ? `${md(c.next_earnings)}（${daysTo(c.next_earnings)}天）` : "未知");
     return `<h3>價位</h3><dl class="levels">${common}${own}</dl>`;
   }
 
   function chartHtml(c, lane) {
     if (!c.chart) return `<p class="muted" style="font-size:13px">這檔沒有附圖（每條線只附前 ${S.cfg.max_chart_items} 檔），請用上方連結看圖。</p>`;
-    const levels = [{ y: c.pivot, label: "買點", cls: "pivot" }, { y: c.stop, label: "止損", cls: "stop" }];
-    if (lane === "pead") levels.push({ y: c.reaction_low, label: "反應日低", cls: "low" });
+    const sp = stopOf(lane, c), levels = [{ y: c.pivot, label: "買點", cls: "pivot" }, { y: sp.v, label: "止損", cls: "stop" }];
+    const other = sp.mode === "video" ? c.stop_base : c.stop;
+    if (other != null && Math.abs(other - sp.v) > 0.005 && sp.mode !== "custom") levels.push({ y: other, label: sp.mode === "video" ? "整理低" : "影片止", cls: "entry" });
+    if (lane === "pead") levels.push({ y: c.reaction_low, label: "反應低", cls: "low" });
     const marks = lane === "pead" ? [{ date: c.reaction_date, label: "財報反應日" }] : [{ date: c.peak_date, label: "前高" }];
     if (c.breakout_date) marks.push({ date: c.breakout_date, label: "突破" });
     return `<div class="chartbox">${Chart2.candleSvg(c.chart, { levels, marks, label: `${c.symbol} 近期日線` })}</div>
-      <div class="legend"><span><i style="color:var(--accent)"></i>50 日線</span><span><i style="color:var(--hot)"></i>買點</span><span><i class="stop-i"></i>止損</span><span>量能在下方</span></div>`;
+      <div class="legend"><span><i style="color:var(--accent)"></i>50 日線</span>${c.pivot != null ? `<span><i style="color:var(--hot)"></i>買點</span><span><i class="stop-i"></i>止損</span>` : ""}<span>量能在下方</span></div>`;
+  }
+
+  function removedHtml(c) {
+    const row = (a, b) => `<dt>${a}</dt><dd>${b}</dd>`, v = (c.last_close / c.reaction_low - 1) * 100;
+    return `<h3>失效資訊</h3><dl class="levels">${row("反應日", `${md(c.reaction_date)} ${esc(c.earnings_time || "")}`)}${row("反應日漲幅", `<span class="up">${pct(c.gain_pct, 1, true)}</span>`)}
+      ${row("反應日低點", num(c.reaction_low))}${row("失效日（收盤跌破）", md(c.removed_on))}${row("最新收盤", num(c.last_close))}${row("距反應日低點", `<span class="${v >= 0 ? "up" : "down"}">${pct(v, 1, true)}</span>`)}</dl>
+      <p class="muted" style="font-size:13px">失效後不再計算買點、止損與 EP。若之後價格重新站回、又出現新的財報大漲，才會以新的反應日重新列入。</p>`;
+  }
+
+  function stopPickerHtml(lane, c) {
+    if (c.stop == null) return "";
+    const cur = stopOf(lane, c), n = S.notes[LANES[lane].noteKey(c)] || {};
+    const opt = (mode, label, val) => (val == null ? "" : `<label><input type="radio" name="stop-${lane}" data-stopmode="${mode}" ${cur.mode === mode ? "checked" : ""}> ${label}　<b>${num(val)}</b>　<span class="muted">風險 ${pct((cur.entry - val) / cur.entry * 100, 1)}</span></label>`);
+    return `<h3>止損依據（可改，下方倉位會跟著算）</h3><div class="stoppick">
+      ${opt("video", lane === "pead" ? `影片預設：突破前最後 ${S.cfg.stop_lookback_bars} 日的最低點` : "影片預設：突破當天的最低點", c.stop)}
+      ${opt("base", "較寬：整理區最低點", c.stop_base)}
+      <label>自訂止損價　<input type="number" step="0.01" data-stopcustom value="${n.stopCustom || ""}" placeholder="${num(c.stop_base ?? c.stop)}" aria-label="自訂止損價"></label>
+      <p class="hint">止損放得越寬，同樣風險金額買到的股數越少，不是多冒風險。影片的理由是止損比平時一天的波動還遠時，部位會小到不划算，也比較容易被洗掉。</p></div>`;
   }
 
   function renderDetail(lane) {
@@ -289,9 +335,9 @@
       <h2>${esc(c.symbol)} ${changeTag(c)}</h2>
       <div class="sub">${esc(c.name || "")} · <a href="${tv(c.symbol)}" target="_blank" rel="noopener">TradingView 圖表 ↗</a>${lane === "pead" ? ` · 財報 ${md(c.earnings_date)} ${esc(c.earnings_time || "")}` : ""}</div>
       <p class="verdict">${verdict(lane, c)}</p>
-      ${chartHtml(c, lane)}${levelsHtml(lane, c)}${sizingHtml(c)}
+      ${chartHtml(c, lane)}${c.stage === "removed" ? removedHtml(c) : `${levelsHtml(lane, c)}${stopPickerHtml(lane, c)}${sizingHtml(lane, c)}
       ${lane === "pead" ? checksHtml("整理條件（影片 A）", c.checks) + checksHtml("EP 品質（影片 B）", c.ep_checks) : checksHtml("形態條件（影片 B）", c.checks)}
-      ${keyHtml}${manualHtml(lane, c)}`;
+      ${keyHtml}${manualHtml(lane, c)}`}`;
   }
 
   // ───────── 持倉 ─────────
@@ -343,6 +389,7 @@
         ["　剔除", "任何一天收盤跌破財報大漲當天的最低點", "自動，歸入「失效」"],
         ["② 整理", "回落 ≤25%；沒有放量大陰線；收盤不破 50 日線；至少一週；振幅與量越來越小", `回落 ≤${c.pullback_max_pct}%；跌 ≥${c.dist_drop_pct}% 且量 ≥${c.dist_volume_ratio} 倍算大陰線（暫定）；整理 ≥${c.min_consolidation_days} 日；近三日與前段比較`],
         ["③ 進場", "價格漲過整理區高點就買；止損放突破前最後幾天最低點；距離不超過平時一天的波動", `日線以最高價越過判定，並標出收盤是否站上；止損取突破前 ${c.stop_lookback_bars} 日最低；風險 ≤${c.risk_adr_mult}×ADR 理想、≤${c.risk_adr_max_mult}×ADR 可接受`],
+        ["　波動", "整理期間每天的漲跌幅比平時小", `整理期日振幅中位數 ≤1 倍財報前 ADR 合格；≤${c.calm_fail_adr_mult} 倍只提醒（大漲後波動通常仍偏高）；更大才不合格（暫定）`],
         ["配對", "財報後的大漲才算", "盤前：財報日當天；盤後：下一交易日（用 Nasdaq 的時間欄位）"],
       ])}
       <h2>EP（影片 B）</h2>
@@ -386,7 +433,9 @@
         <label class="field">帳戶金額（美元）<input type="number" id="set-account" min="1000" step="1000" value="${s.account}"></label>
         <label class="field">單筆風險（%）<input type="number" id="set-risk" min="0.05" max="3" step="0.05" value="${s.riskPct}"></label>
         <label class="field">單檔上限（%，0＝依影片自動）<input type="number" id="set-maxpos" min="0" max="50" step="1" value="${s.maxPosPct}"></label>
-        <p class="hint">影片：單筆 0.25%～1.5%；單檔 10～20%（小於 10 萬美元至多 25%）；最多同時 4 檔。這些數字只用來試算，不會送到任何地方。</p></section>
+        <label class="field">預設止損依據<select id="set-stopmode"><option value="video">影片預設（較近）</option><option value="base">整理區最低點（較寬）</option></select></label>
+        <label class="field">止損寬度上限（倍 ADR）<input type="number" id="set-riskmax" min="1" max="5" step="0.25" value="${s.riskMaxMult}"></label>
+        <p class="hint">止損寬度只影響「評級」與警示文字，不會把標的移出清單；動能突破線在後端另有 1 倍 ADR 的篩選（<code>bo_stop_max_adr_mult</code>）。影片：單筆 0.25%～1.5%；單檔 10～20%（小於 10 萬美元至多 25%）；最多同時 4 檔。這些數字只用來試算，不會送到任何地方。</p></section>
       <section><h2>外觀</h2>
         <label class="field">主題<select id="set-theme"><option value="auto">跟隨系統</option><option value="light">淺色</option><option value="dark">深色</option></select></label>
         <label class="field">漲跌顏色<select id="set-color"><option value="cn">紅漲綠跌</option><option value="us">綠漲紅跌</option></select></label>
@@ -403,7 +452,7 @@
         ${row("營收預期（Finnhub）", h.finnhub_filled ? `補到 ${h.finnhub_filled} 筆` : "未啟用（設 FINNHUB_API_KEY 才有）")}
         ${row("大盤", `${esc(S.data.regime?.index || "—")}・${esc(S.data.regime?.date || "")}`)}
       </table></section></div>`;
-    $("#set-theme").value = s.theme; $("#set-color").value = s.color;
+    $("#set-theme").value = s.theme; $("#set-color").value = s.color; $("#set-stopmode").value = s.stopMode;
   }
 
   // ───────── 事件 ─────────
@@ -422,8 +471,8 @@
     } else {
       const st = S.set, maxPos = st.maxPosPct || Sizing.defaultMaxPosPct(st.account, S.cfg);
       const lines = ["symbol,stage,alert_price,stop,suggested_shares,note"].concat(rows.map((c) => {
-        const p = Sizing.position({ account: st.account, riskPct: st.riskPct, entry: c.entry_price ?? c.pivot, stop: c.stop, maxPosPct: maxPos });
-        return [c.symbol, STAGE_LABEL[c.stage], c.pivot ?? "", c.stop ?? "", p ? p.shares : "", `"${(S.notes[LANES[lane].noteKey(c)]?.note || "").replace(/"/g, '""')}"`].join(",");
+        const sp = stopOf(lane, c), p = Sizing.position({ account: st.account, riskPct: st.riskPct, entry: sp.entry, stop: sp.v, maxPosPct: maxPos });
+        return [c.symbol, STAGE_LABEL[c.stage], c.pivot ?? "", sp.v ?? "", p ? p.shares : "", `"${(S.notes[LANES[lane].noteKey(c)]?.note || "").replace(/"/g, '""')}"`].join(",");
       }));
       download(`alerts-${lane}-${S.data.asof}.csv`, "\ufeff" + lines.join("\n"), "text/csv");
     }
@@ -458,10 +507,11 @@
       root.addEventListener("click", (e) => {
         const stage = e.target.closest("[data-stage]"), th = e.target.closest("th[data-k]"), row = e.target.closest("tr.row"), act = e.target.closest("[data-act]");
         if (act?.dataset.act === "close") return closeSheet();
+        if (act?.dataset.act === "wide") { S.set.wide = !S.set.wide; saveSettings(); return applyLook(); }
         if (act) return exportLane(lane, act.dataset.act, act);
         if (stage) { ui(lane).stage = stage.dataset.stage; S.sel[lane] = null; saveUi(); return renderLane(lane); }
         if (th) {
-          const u = ui(lane), col = COLS[lane].find((c) => c.k === th.dataset.k);
+          const u = ui(lane), col = colsFor(lane).find((c) => c.k === th.dataset.k) || colsFor(lane)[1];
           u.dir = u.sort === col.k ? -u.dir : (col.dir ?? -1); u.sort = col.k; saveUi();
           return lane === "hold" ? renderHold() : renderLane(lane);
         }
@@ -476,6 +526,16 @@
           const sib = e.key === "ArrowDown" ? row.nextElementSibling : row.previousElementSibling;
           if (sib?.classList.contains("row")) { S.sel[lane] = sib.dataset.id; lane === "hold" ? renderHold() : renderLane(lane); $(`#tab-${lane} tr.row.sel`)?.focus(); }
         }
+      });
+      // 止損依據：選項與自訂價
+      root.addEventListener("change", (e) => {
+        const mode = e.target.dataset?.stopmode, custom = e.target.hasAttribute?.("data-stopcustom"), L = LANES[lane];
+        if (!mode && !custom) return;
+        const c = L.items().find((x) => L.id(x) === S.sel[lane]);
+        if (!c) return;
+        const n = (S.notes[L.noteKey(c)] ||= {});
+        if (mode) { S.set.stopMode = mode; delete n.stopCustom; saveSettings(); } else { const v = Number(e.target.value); if (v > 0) n.stopCustom = v; else delete n.stopCustom; }
+        n.t = Date.now(); LS.set("pb.notes", S.notes); renderLane(lane);
       });
       // 人工確認與筆記
       root.addEventListener("input", (e) => {
@@ -502,8 +562,10 @@
       else if (id === "set-maxpos") S.set.maxPosPct = Math.max(Number(v) || 0, 0);
       else if (id === "set-theme") S.set.theme = v;
       else if (id === "set-color") S.set.color = v;
+      else if (id === "set-stopmode") S.set.stopMode = v;
+      else if (id === "set-riskmax") S.set.riskMaxMult = Math.max(Number(v) || S.cfg.risk_adr_max_mult, 1);
       else return;
-      saveSettings(); applyLook(); ["pead", "breakout"].forEach(renderDetail);
+      saveSettings(); applyLook(); ["pead", "breakout"].forEach(renderLane);
     });
     $("#tab-settings").addEventListener("click", (e) => {
       if (e.target.id !== "exp") return;
@@ -534,6 +596,7 @@
       const get = async (p) => { const r = await fetch(p, { cache: "no-cache" }); if (!r.ok) throw new Error(`${p} (${r.status})`); return r.json(); };
       [S.cfg, S.data] = await Promise.all([get("config.json"), get("data/screen.json")]);
       if (!S.data.generated_at) throw new Error("data/screen.json 還沒有資料");
+      if (!S.set.riskMaxMult) S.set.riskMaxMult = S.cfg.risk_adr_max_mult;
     } catch (e) {
       $("#regime").className = "regime weak";
       $("#regime").innerHTML = `<b>資料載入失敗</b>：${esc(e.message)}<span class="meta">請到 GitHub 的 Actions 手動執行一次「更新資料並部署 Pages」；本機開啟請用 <code>python -m http.server</code>，不要直接點開檔案。</span>`;

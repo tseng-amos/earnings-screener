@@ -127,8 +127,9 @@ def analyze(d: pd.DataFrame, pos: int, cfg: dict) -> dict:
         checks.append(_check("pending", "波動小於平時", "尚無整理資料"))
     else:
         med = float(cons["range_pct"].median())
-        checks.append(_check("pass" if med <= adr else "fail", "波動小於平時",
-                             f"整理期日振幅中位數 {med:.1f}%（平時 ADR {adr:.1f}%）"))
+        calm = "pass" if med <= adr else ("warn" if med <= adr * cfg["calm_fail_adr_mult"] else "fail")
+        checks.append(_check(calm, "波動小於平時",
+                             f"整理期日振幅中位數 {med:.1f}%（財報前平時 ADR {adr:.1f}%；≤{cfg['calm_fail_adr_mult']:g} 倍只提醒，因為大漲後波動通常仍偏高）"))
 
     # 條件三：收盤不跌破 50 日均線
     below = cons[cons["Close"] < cons["sma50"]]
@@ -150,9 +151,10 @@ def analyze(d: pd.DataFrame, pos: int, cfg: dict) -> dict:
         checks.append(_check("pending", "振幅量能收斂", "資料不足（需整理 4 日以上）"))
 
     # 進出場價位：整理區高點為買點，突破前最後 N 根最低點為止損；跳空越過買點則以開盤價成交
-    pivot = stop = risk_pct = entry = None
+    pivot = stop = risk_pct = entry = stop_base = None
     if n_c > 0:
         pivot = float(cons["High"].max())
+        stop_base = float(cons["Low"].min())          # 較寬的止損選項：整理區（反應日後）最低點
         stop_from = (k if k is not None else n) - cfg["stop_lookback_bars"]
         stop = float(d["Low"].iloc[max(stop_from, pos + 1):(k if k is not None else n)].min())
         if k is not None:
@@ -177,6 +179,7 @@ def analyze(d: pd.DataFrame, pos: int, cfg: dict) -> dict:
         max_pullback_pct=None if max_dd is None else round(max_dd, 1),
         pivot=None if pivot is None else round(pivot, 2),
         stop=None if stop is None else round(stop, 2),
+        stop_base=None if stop_base is None else round(stop_base, 2),
         risk_pct=None if risk_pct is None else round(risk_pct, 1),
         adr_pct=None if adr is None else round(adr, 1),
         risk_grade=risk_grade,
@@ -319,7 +322,7 @@ def _breakout_state(d: pd.DataFrame, cfg: dict, rank: dict, days_to_earnings: in
     entry = max(float(last["Open"]), pivot) if broke else pivot
     stop = float(last["Low"]) if broke else float(cons["Low"].tail(cfg["stop_lookback_bars"]).min())
     risk = (entry - stop) / entry * 100
-    grade = risk_grade_of(risk, adr, {**cfg, "risk_adr_max_mult": cfg["risk_adr_mult"]})  # 影片 B：止損寬度不能超過 ADR
+    grade = risk_grade_of(risk, adr, {**cfg, "risk_adr_max_mult": cfg["bo_stop_max_adr_mult"]})  # 影片 B：止損寬度不能超過 ADR（可在 config 放寬）
     if broke:
         checks.append(_check("fail" if grade == "too_wide" else "pass", "止損距離", f"{risk:.1f}%（ADR {adr:.1f}%）"))
 
@@ -328,7 +331,7 @@ def _breakout_state(d: pd.DataFrame, cfg: dict, rank: dict, days_to_earnings: in
     stage = "watch" if has_fail or has_pending else ("breakout" if broke else "setup")
     return {**out, "stage": stage, "checks": checks, "peak_date": win.index[peak].strftime("%Y-%m-%d"),
             "runup_pct": round(runup, 0), "cons_days": n_c, "pivot": round(pivot, 2), "entry_price": round(entry, 2),
-            "stop": round(stop, 2), "risk_pct": round(risk, 1), "risk_grade": grade,
+            "stop": round(stop, 2), "stop_base": round(float(cons["Low"].min()), 2), "risk_pct": round(risk, 1), "risk_grade": grade,
             "dist_to_pivot_pct": round((pivot / float(last["Close"]) - 1) * 100, 1),
             "close_confirmed": bool(float(last["Close"]) > pivot) if broke else None}
 

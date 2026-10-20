@@ -141,6 +141,13 @@ def test_merge_prices_rescales_for_dividends():
     assert len(merged) == 101 and abs(merged["Close"].iloc[0] - 98.0) < 1e-9 and abs(merged["Close"].iloc[89] - merged["Close"].iloc[90]) < 1e-9
 
 
+def test_known_report_time_survives_refetch():
+    old = [{"symbol": "AAA", "time": "盤後"}, {"symbol": "BBB", "time": "時間未定"}]
+    new = [{"symbol": "AAA", "time": "時間未定"}, {"symbol": "BBB", "time": "時間未定"}, {"symbol": "CCC", "time": "盤前"}]
+    S.carry_known_times(old, new)
+    assert [r["time"] for r in new] == ["盤後", "時間未定", "盤前"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

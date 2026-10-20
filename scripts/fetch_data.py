@@ -30,6 +30,14 @@ def next_earnings_of(history: list[dict], today: date) -> tuple[str | None, int 
     return (upcoming[0], (date.fromisoformat(upcoming[0]) - today).days) if upcoming else (None, None)
 
 
+def report_time(event: dict, reaction_date: str) -> str:
+    """Nasdaq 對已公布的財報不再提供盤前／盤後欄位（全變「時間未定」）。價格已經反應了，就由反應日推定：
+    反應日＝財報日 → 盤前公布；反應日晚於財報日 → 盤後公布。"""
+    if event.get("time") in ("盤前", "盤後"):
+        return event["time"]
+    return "盤前（推定）" if reaction_date == event["date"] else "盤後（推定）"
+
+
 def build_screen(prices: dict[str, pd.DataFrame], events: list[dict], regime: dict, cfg: dict, today: date,
                  holdings: list[dict] | None = None) -> dict:
     """prices：{代號: 日線}；events：財報事件（含過去與未來）；回傳網站用的 screen.json 內容（尚未加上與昨日的差異）。"""
@@ -50,8 +58,9 @@ def build_screen(prices: dict[str, pd.DataFrame], events: list[dict], regime: di
         if pos is not None:
             event = match_event(d, pos, history)
             if event is not None:
-                pead.append({**analyze(d, pos, cfg), **ep_quality(d, pos, event, cfg), "symbol": symbol, "name": name,
-                             "earnings_date": event["date"], "earnings_time": event.get("time", ""),
+                result = analyze(d, pos, cfg)
+                pead.append({**result, **ep_quality(d, pos, event, cfg), "symbol": symbol, "name": name,
+                             "earnings_date": event["date"], "earnings_time": report_time(event, result["reaction_date"]),
                              "eps_surprise_pct": event.get("eps_surprise_pct"), "next_earnings": next_date})
 
         # 動能突破線（影片 B）：下次財報距離用於「離財報兩三天不買」

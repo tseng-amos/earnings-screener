@@ -77,6 +77,14 @@ def fetch_calendar_day(day: date) -> list[dict] | None:
     } for row in rows if row.get("symbol")]
 
 
+def carry_known_times(old_rows: list[dict], new_rows: list[dict]) -> None:
+    """財報公布後 Nasdaq 會把盤前／盤後欄位清掉；重抓時沿用之前（公布前）已知的時間。"""
+    known = {r["symbol"]: r["time"] for r in old_rows if r.get("time") in ("盤前", "盤後")}
+    for row in new_rows:
+        if row.get("time") == "時間未定" and row["symbol"] in known:
+            row["time"] = known[row["symbol"]]
+
+
 def fetch_events(start: date, end: date, minimum_mcap: float, cache_path: Path | None = None,
                  today: date | None = None) -> tuple[list[dict], list[str]]:
     """回傳 (事件清單, 抓取失敗的日期)。3 天前的歷史日曆讀快取，近期與未來日期每次重抓。"""
@@ -97,6 +105,7 @@ def fetch_events(start: date, end: date, minimum_mcap: float, cache_path: Path |
                     day += timedelta(days=1)
                     continue
                 rows = [event for event in fetched if (event["mcap"] or 0) >= minimum_mcap]
+                carry_known_times(cache.get(key) or [], rows)
                 cache[key] = rows
             out.extend(rows)
         day += timedelta(days=1)
