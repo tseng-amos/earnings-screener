@@ -11,6 +11,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from structure import previous_swing_low
+
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     """計算漲幅、量能倍數、10／20／50 日均線、日內振幅。"""
@@ -151,14 +153,21 @@ def analyze(d: pd.DataFrame, pos: int, cfg: dict) -> dict:
         checks.append(_check("pending", "振幅量能收斂", "資料不足（需整理 4 日以上）"))
 
     # 進出場價位：整理區高點為買點，突破前最後 N 根最低點為止損；跳空越過買點則以開盤價成交
-    pivot = stop = risk_pct = entry = stop_base = None
+    pivot = stop = stop_3d = stop_swing = swing_pos = risk_pct = entry = stop_base = None
+    stop_method = "3d"
     if n_c > 0:
         pivot = float(cons["High"].max())
         stop_base = float(cons["Low"].min())          # 較寬的止損選項：整理區（反應日後）最低點
         stop_from = (k if k is not None else n) - cfg["stop_lookback_bars"]
-        stop = float(d["Low"].iloc[max(stop_from, pos + 1):(k if k is not None else n)].min())
+        stop = stop_3d = float(d["Low"].iloc[max(stop_from, pos + 1):(k if k is not None else n)].min())
         if k is not None:
             entry = max(float(d["Open"].iloc[k]), pivot)
+        # 預設止損：突破前的前一個轉折低點（NFE Base 轉折路徑）；只採用反應日之後形成的轉折，找不到就退回近 N 日最低點
+        found = previous_swing_low(d, k if k is not None else n, pos + 1)
+        if found is not None:
+            stop_swing, swing_pos = found
+            if cfg["stop_method"] == "swing" and stop_swing < (entry or pivot):
+                stop, stop_method = stop_swing, "swing"
         risk_pct = ((entry or pivot) - stop) / (entry or pivot) * 100
     risk_grade = risk_grade_of(risk_pct, adr, cfg)
 
@@ -180,6 +189,9 @@ def analyze(d: pd.DataFrame, pos: int, cfg: dict) -> dict:
         pivot=None if pivot is None else round(pivot, 2),
         stop=None if stop is None else round(stop, 2),
         stop_base=None if stop_base is None else round(stop_base, 2),
+        stop_3d=None if stop_3d is None else round(stop_3d, 2), stop_method=stop_method,
+        stop_swing=None if stop_swing is None else round(stop_swing, 2),
+        stop_swing_date=None if swing_pos is None else d.index[swing_pos].strftime("%Y-%m-%d"),
         risk_pct=None if risk_pct is None else round(risk_pct, 1),
         adr_pct=None if adr is None else round(adr, 1),
         risk_grade=risk_grade,
@@ -320,7 +332,15 @@ def _breakout_state(d: pd.DataFrame, cfg: dict, rank: dict, days_to_earnings: in
 
     # 買點＝橫盤區最高點；突破當天止損＝當天最低點（影片 B），尚未突破則以近 N 日最低點估算
     entry = max(float(last["Open"]), pivot) if broke else pivot
-    stop = float(last["Low"]) if broke else float(cons["Low"].tail(cfg["stop_lookback_bars"]).min())
+    stop = stop_3d = float(last["Low"]) if broke else float(cons["Low"].tail(cfg["stop_lookback_bars"]).min())
+    # 預設止損：突破前的前一個轉折低點（只看高點之後的整理期；突破當天不算進轉折路徑）
+    stop_swing, swing_date, stop_method = None, None, "3d"
+    found = previous_swing_low(d, len(d) - 1 if broke else len(d), len(base) - len(win) + peak + 1)
+    if found is not None:
+        stop_swing, swing_pos = found
+        swing_date = d.index[swing_pos].strftime("%Y-%m-%d")
+        if cfg["stop_method"] == "swing" and stop_swing < entry:
+            stop, stop_method = stop_swing, "swing"
     risk = (entry - stop) / entry * 100
     grade = risk_grade_of(risk, adr, {**cfg, "risk_adr_max_mult": cfg["bo_stop_max_adr_mult"]})  # 影片 B：止損寬度不能超過 ADR（可在 config 放寬）
     if broke:
@@ -331,7 +351,8 @@ def _breakout_state(d: pd.DataFrame, cfg: dict, rank: dict, days_to_earnings: in
     stage = "watch" if has_fail or has_pending else ("breakout" if broke else "setup")
     return {**out, "stage": stage, "checks": checks, "peak_date": win.index[peak].strftime("%Y-%m-%d"),
             "runup_pct": round(runup, 0), "cons_days": n_c, "pivot": round(pivot, 2), "entry_price": round(entry, 2),
-            "stop": round(stop, 2), "stop_base": round(float(cons["Low"].min()), 2), "risk_pct": round(risk, 1), "risk_grade": grade,
+            "stop": round(stop, 2), "stop_base": round(float(cons["Low"].min()), 2), "stop_3d": round(stop_3d, 2),
+            "stop_method": stop_method, "stop_swing": None if stop_swing is None else round(stop_swing, 2), "stop_swing_date": swing_date, "risk_pct": round(risk, 1), "risk_grade": grade,
             "dist_to_pivot_pct": round((pivot / float(last["Close"]) - 1) * 100, 1),
             "close_confirmed": bool(float(last["Close"]) > pivot) if broke else None}
 

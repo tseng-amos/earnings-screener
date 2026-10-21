@@ -21,7 +21,8 @@
     "chart_bars / max_chart_items": "介面：迷你 K 線的根數與每條線最多附圖的標的數（暫定）",
     "bo_resistance_band_pct": "影片 B：特斯拉橫盤期間高點壓在 830～840 一帶；寬度門檻暫定 5%（僅提示，不擋訊號）",
     "calm_fail_adr_mult": "影片 A：整理期間每天漲跌幅要比平時小（沒給數字）。財報大漲後波動通常仍偏高，所以 ≤1 倍 ADR 合格、≤1.5 倍（取影片 B 對止損的容忍倍數）只提醒、超過才不合格（暫定）",
-    "bo_stop_max_adr_mult": "影片 B：突破單的止損距離不能超過 ADR（1 倍）；想放寬可調高，但影片的理由是止損太遠時部位會變很小、風險報酬不划算"
+    "bo_stop_max_adr_mult": "影片 B：突破單的止損距離不能超過 ADR（1 倍，止損＝突破當天最低點）。改採「前一個轉折低點」後止損天然較遠，暫放寬到 2 倍（暫定）；想回到影片做法請同時設 stop_method=3d 與本值=1",
+    "stop_method": "止損位置：swing＝突破前的前一個轉折低點（本站移植自使用者的 NFE Base 轉折指標；只採用反應日／高點之後的整理期轉折，找不到時退回 3d）；3d＝影片原本的做法（PEAD 取突破前最後幾日最低點、突破線取突破當天最低點）"
   },
   "regime_index": "^IXIC",
   "us_min_mcap_usd": 2000000000,
@@ -123,5 +124,6 @@
   },
   "bo_resistance_band_pct": 5,
   "calm_fail_adr_mult": 1.5,
-  "bo_stop_max_adr_mult": 1.0
+  "bo_stop_max_adr_mult": 2.0,
+  "stop_method": "swing"
 }

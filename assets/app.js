@@ -17,7 +17,7 @@
   };
 
   // ───────── 狀態 ─────────
-  const DEFAULTS = { account: 100000, riskPct: 0.5, maxPosPct: 0, theme: "auto", color: "cn", stopMode: "video", riskMaxMult: 0, wide: false };
+  const DEFAULTS = { account: 100000, riskPct: 0.5, maxPosPct: 0, theme: "auto", color: "cn", stopMode: "default", riskMaxMult: 0, wide: false };
   const S = {
     cfg: null, data: null, tab: "pead", sel: {}, composing: false,
     ui: LS.get("pb.ui", {}),
@@ -76,7 +76,10 @@
   // 部位會隨止損距離自動縮放（風險金額不變），所以放寬止損＝買得比較少，不是多冒風險。
   function stopOf(lane, c) {
     const n = S.notes[LANES[lane].noteKey(c)] || {}, custom = Number(n.stopCustom), entry = c.entry_price ?? c.pivot;
-    let mode = S.set.stopMode === "base" && c.stop_base != null ? "base" : "video", v = mode === "base" ? c.stop_base : c.stop;
+    const pref = S.set.stopMode === "video" ? "default" : S.set.stopMode;   // 舊版設定相容
+    let mode = "default", v = c.stop;
+    if (pref === "3d" && c.stop_3d != null) { mode = "3d"; v = c.stop_3d; }
+    else if (pref === "base" && c.stop_base != null) { mode = "base"; v = c.stop_base; }
     if (custom > 0 && entry && custom < entry) { mode = "custom"; v = custom; }
     const risk = entry && v ? (entry - v) / entry * 100 : null, adr = c.adr_pct;
     const grade = risk == null || !adr ? null : risk <= adr * S.cfg.risk_adr_mult ? "ideal" : risk <= adr * S.set.riskMaxMult ? "acceptable" : "too_wide";
@@ -269,7 +272,7 @@
     if (sp.grade === "too_wide") warns.push(`止損距離超過 ${st.riskMaxMult} 倍 ADR：影片建議不要買，或等整理再收斂；放寬止損不會多冒風險，但股數會變少。`);
     if (p.shares === 0) warns.push("算出 0 股：止損離買點太遠或單筆風險設太低。");
     return `<h3>倉位試算（影片 B）</h3><div class="sizing">以帳戶 ${usd(st.account)}、單筆風險 ${st.riskPct}% 計，
-      ${c.entry_price ? "進場價" : "以買點估算"} ${num(entry)}、止損 ${num(sp.v)}（${{ video: "影片預設", base: "整理區最低點", custom: "自訂" }[sp.mode]}，距離 ${num(p.stopPct, 1)}%）：
+      ${c.entry_price ? "進場價" : "以買點估算"} ${num(entry)}、止損 ${num(sp.v)}（${{ default: c.stop_method === "swing" ? "前一個轉折低點" : "近日最低點", "3d": "影片：近日最低點", base: "整理區最低點", custom: "自訂" }[sp.mode]}，距離 ${num(p.stopPct, 1)}%）：
       買 <b>${p.shares.toLocaleString()}</b> 股，約 ${usd(p.cost)}（佔帳戶 ${num(p.posPct, 1)}%），止損觸發約虧 ${usd(p.lossUsd)}。
       ${warns.map((w) => `<span class="warn">${esc(w)}</span>`).join("")}
       <span class="warn" style="color:var(--muted)">影片：最多同時持有 ${cfg.sizing_max_positions} 檔、不用槓桿；一次買足，不加碼攤平。</span></div>`;
@@ -298,11 +301,14 @@
   function chartHtml(c, lane) {
     if (!c.chart) return `<p class="muted" style="font-size:13px">這檔沒有附圖（每條線只附前 ${S.cfg.max_chart_items} 檔），請用上方連結看圖。</p>`;
     const sp = stopOf(lane, c), levels = [{ y: c.pivot, label: "買點", cls: "pivot" }, { y: sp.v, label: "止損", cls: "stop" }];
-    const other = sp.mode === "video" ? c.stop_base : c.stop;
-    if (other != null && Math.abs(other - sp.v) > 0.005 && sp.mode !== "custom") levels.push({ y: other, label: sp.mode === "video" ? "整理低" : "影片止", cls: "entry" });
+    if (sp.mode !== "custom") {   // 另外兩種止損當參考線（與已選的不重複才畫）
+      const refs = [["3d", c.stop_3d, "近日低"], ["base", c.stop_base, "整理低"]];
+      for (const [m, y, label] of refs) if (m !== sp.mode && y != null && Math.abs(y - sp.v) > 0.005) levels.push({ y, label, cls: "entry" });
+    }
     if (lane === "pead") levels.push({ y: c.reaction_low, label: "反應低", cls: "low" });
     const marks = lane === "pead" ? [{ date: c.reaction_date, label: "財報反應日" }] : [{ date: c.peak_date, label: "前高" }];
     if (c.breakout_date) marks.push({ date: c.breakout_date, label: "突破" });
+    if (c.stop_method === "swing" && c.stop_swing_date) marks.push({ date: c.stop_swing_date, label: "轉折低" });
     return `<div class="chartbox">${Chart2.candleSvg(c.chart, { levels, marks, label: `${c.symbol} 近期日線` })}</div>
       <div class="legend"><span><i style="color:var(--accent)"></i>50 日線</span>${c.pivot != null ? `<span><i style="color:var(--hot)"></i>買點</span><span><i class="stop-i"></i>止損</span>` : ""}<span>量能在下方</span></div>`;
   }
@@ -319,7 +325,8 @@
     const cur = stopOf(lane, c), n = S.notes[LANES[lane].noteKey(c)] || {};
     const opt = (mode, label, val) => (val == null ? "" : `<label><input type="radio" name="stop-${lane}" data-stopmode="${mode}" ${cur.mode === mode ? "checked" : ""}> ${label}　<b>${num(val)}</b>　<span class="muted">風險 ${pct((cur.entry - val) / cur.entry * 100, 1)}</span></label>`);
     return `<h3>止損依據（可改，下方倉位會跟著算）</h3><div class="stoppick">
-      ${opt("video", lane === "pead" ? `影片預設：突破前最後 ${S.cfg.stop_lookback_bars} 日的最低點` : "影片預設：突破當天的最低點", c.stop)}
+      ${opt("default", c.stop_method === "swing" ? `預設：突破前的前一個轉折低點（${md(c.stop_swing_date)}）` : "預設：找不到轉折低點，改用近日最低點", c.stop)}
+      ${c.stop_3d != null && Math.abs(c.stop_3d - c.stop) > 0.005 ? opt("3d", lane === "pead" ? `影片：突破前最後 ${S.cfg.stop_lookback_bars} 日的最低點（較近）` : "影片：突破當天最低點（較近）", c.stop_3d) : ""}
       ${opt("base", "較寬：整理區最低點", c.stop_base)}
       <label>自訂止損價　<input type="number" step="0.01" data-stopcustom value="${n.stopCustom || ""}" placeholder="${num(c.stop_base ?? c.stop)}" aria-label="自訂止損價"></label>
       <p class="hint">止損放得越寬，同樣風險金額買到的股數越少，不是多冒風險。影片的理由是止損比平時一天的波動還遠時，部位會小到不划算，也比較容易被洗掉。</p></div>`;
@@ -388,7 +395,8 @@
         ["① 選股", "漲 ≥10%、量 ≥50 日均量 2 倍；營收與 EPS 都超預期，最好上調指引", `漲幅 ≥${c.min_gain_pct}%、量 ≥${c.min_volume_ratio} 倍（自動）；EPS 用日曆數字、營收需設 <code>FINNHUB_API_KEY</code>，指引須人工確認`],
         ["　剔除", "任何一天收盤跌破財報大漲當天的最低點", "自動，歸入「失效」"],
         ["② 整理", "回落 ≤25%；沒有放量大陰線；收盤不破 50 日線；至少一週；振幅與量越來越小", `回落 ≤${c.pullback_max_pct}%；跌 ≥${c.dist_drop_pct}% 且量 ≥${c.dist_volume_ratio} 倍算大陰線（暫定）；整理 ≥${c.min_consolidation_days} 日；近三日與前段比較`],
-        ["③ 進場", "價格漲過整理區高點就買；止損放突破前最後幾天最低點；距離不超過平時一天的波動", `日線以最高價越過判定，並標出收盤是否站上；止損取突破前 ${c.stop_lookback_bars} 日最低；風險 ≤${c.risk_adr_mult}×ADR 理想、≤${c.risk_adr_max_mult}×ADR 可接受`],
+        ["③ 進場", "價格漲過整理區高點就買；止損放突破前最後幾天最低點；距離不超過平時一天的波動", `日線以最高價越過判定，並標出收盤是否站上；風險 ≤${c.risk_adr_mult}×ADR 理想、≤${c.risk_adr_max_mult}×ADR 可接受`],
+        ["　止損位置", "突破前最後幾天最低點", `<b>預設改為「突破前的前一個轉折低點」</b>（移植自你的 NFE Base 轉折指標，只採用反應日之後的轉折；找不到時退回近 ${c.stop_lookback_bars} 日最低）。可在詳情切換成影片的近日最低、整理區最低或自訂`],
         ["　波動", "整理期間每天的漲跌幅比平時小", `整理期日振幅中位數 ≤1 倍財報前 ADR 合格；≤${c.calm_fail_adr_mult} 倍只提醒（大漲後波動通常仍偏高）；更大才不合格（暫定）`],
         ["配對", "財報後的大漲才算", "盤前：財報日當天；盤後：下一交易日（用 Nasdaq 的時間欄位）"],
       ])}
@@ -405,7 +413,7 @@
         ["流動性", "ADR ≥5%（小帳戶）；日成交額至少帳戶的 50～100 倍", `ADR ≥${c.min_adr_pct}%；20 日均成交額 ≥$${(c.min_dollar_volume_usd / 1e6).toFixed(0)}M`],
         ["前段大漲", "過去 1～3 個月有一波 ≥30%", `${c.bo_lookback_bars} 日內高點前 ${c.bo_max_runup_bars} 日漲 ≥${c.bo_min_runup_pct}%`],
         ["橫盤", "兩週到兩個月；低點墊高、振幅收窄；快的貼 10／20 日線、慢的貼 50 日線", `${c.bo_min_cons_days}～${c.bo_max_cons_days} 日；低點分三段不降；顯示貼著哪條均線；另提示高點是否壓在同一帶（≤${c.bo_resistance_band_pct}%）`],
-        ["進場", "價格越過橫盤上沿就買，不提前；止損放當天最低點，不超過 ADR", `最近 ${c.breakout_fresh_bars} 日內第一次越過者標「突破」並固定買點與止損；止損距離 ≤${c.risk_adr_mult}×ADR`],
+        ["進場", "價格越過橫盤上沿就買，不提前；止損放當天最低點，不超過 ADR", `最近 ${c.breakout_fresh_bars} 日內第一次越過者標「突破」並固定買點與止損；止損預設改為「前一個轉折低點」，距離上限 ${c.bo_stop_max_adr_mult} 倍 ADR（影片原為突破當天最低點、1 倍；可在詳情切回）`],
         ["避開", "離財報只剩兩三天不買", `距財報 ≤${c.bo_earnings_block_days} 天擋下；日曆查不到時標「未知」，須人工確認`],
       ])}
       <h2>倉位與出場</h2>
@@ -433,7 +441,7 @@
         <label class="field">帳戶金額（美元）<input type="number" id="set-account" min="1000" step="1000" value="${s.account}"></label>
         <label class="field">單筆風險（%）<input type="number" id="set-risk" min="0.05" max="3" step="0.05" value="${s.riskPct}"></label>
         <label class="field">單檔上限（%，0＝依影片自動）<input type="number" id="set-maxpos" min="0" max="50" step="1" value="${s.maxPosPct}"></label>
-        <label class="field">預設止損依據<select id="set-stopmode"><option value="video">影片預設（較近）</option><option value="base">整理區最低點（較寬）</option></select></label>
+        <label class="field">預設止損依據<select id="set-stopmode"><option value="default">預設：前一個轉折低點</option><option value="3d">影片：近日最低點（較近）</option><option value="base">整理區最低點（較寬）</option></select></label>
         <label class="field">止損寬度上限（倍 ADR）<input type="number" id="set-riskmax" min="1" max="5" step="0.25" value="${s.riskMaxMult}"></label>
         <p class="hint">止損寬度只影響「評級」與警示文字，不會把標的移出清單；動能突破線在後端另有 1 倍 ADR 的篩選（<code>bo_stop_max_adr_mult</code>）。影片：單筆 0.25%～1.5%；單檔 10～20%（小於 10 萬美元至多 25%）；最多同時 4 檔。這些數字只用來試算，不會送到任何地方。</p></section>
       <section><h2>外觀</h2>
@@ -452,7 +460,7 @@
         ${row("營收預期（Finnhub）", h.finnhub_filled ? `補到 ${h.finnhub_filled} 筆` : "未啟用（設 FINNHUB_API_KEY 才有）")}
         ${row("大盤", `${esc(S.data.regime?.index || "—")}・${esc(S.data.regime?.date || "")}`)}
       </table></section></div>`;
-    $("#set-theme").value = s.theme; $("#set-color").value = s.color; $("#set-stopmode").value = s.stopMode;
+    $("#set-theme").value = s.theme; $("#set-color").value = s.color; $("#set-stopmode").value = s.stopMode === "video" ? "default" : s.stopMode;
   }
 
   // ───────── 事件 ─────────

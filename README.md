@@ -47,6 +47,7 @@ python -m playwright install chromium && python scripts/smoke_test.py --site .  
 常調的幾個：
 - `calm_fail_adr_mult`：財報後整理期的日振幅，≤1 倍財報前 ADR 合格、≤此倍數只提醒、更大才不合格（預設 1.5）。
 - `bo_stop_max_adr_mult`：動能突破線的止損寬度上限，預設 1 倍 ADR（影片 B）；調高會讓更多標的入選，但同樣風險下買得更少。
+- `stop_method`：預設 `swing`＝止損放在「突破前的前一個轉折低點」，轉折由 `scripts/structure.py` 計算（移植自 Pine 指標 NFE Base Logic：先吸收內包 K，再用種子／候選狀態機找已確認轉折；跳空大漲那天的大 K 棒會把整個整理期當內包 K，所以也會計算內包 K 的獨立路徑）。只採用反應日（或前高）之後的轉折，找不到時退回近 N 日最低點；設成 `3d` 即回到影片的做法。
 - 網頁「設定」可改預設止損依據與寬度上限；每檔詳情也能改成「整理區最低點」或自訂止損價，倉位試算會跟著算（風險金額不變，股數變少）。
 
 ## 限制
@@ -54,4 +55,6 @@ python -m playwright install chromium && python scripts/smoke_test.py --site .  
 - 日線看不到盤中：影片的 EP「開盤區間高點」、盤前漲幅榜需自己盯盤。
 - 營收、指引、電話會議沒有穩定的免費來源，用「人工確認」勾選（只存在你的瀏覽器，可匯出備份）。
 - Stooq、Nasdaq 備援與 Finnhub 的回應格式是依公開文件寫的，首次執行請看 Actions 日誌確認有抓到。
+- 轉折演算法是逐行移植，並以鏡像對稱與單元測試檢查過，但沒有和 TradingView 的實際輸出逐點比對；上線後請挑幾檔在 TradingView 上對照轉折點。
+- 為了取得突破前的回測低點，額外輸出了「尚未確認的回測低點」（原指標不會畫出，要等價格突破高點才確認）。
 - 不含通知與回測。

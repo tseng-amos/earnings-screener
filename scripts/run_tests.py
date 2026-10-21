@@ -8,7 +8,7 @@ from pathlib import Path
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 total = 0
-for name in ("test_screen", "test_sources", "test_pipeline"):
+for name in ("test_structure", "test_screen", "test_sources", "test_pipeline"):
     module = importlib.import_module(name)
     for fn_name in sorted(n for n in dir(module) if n.startswith("test_")):
         getattr(module, fn_name)()

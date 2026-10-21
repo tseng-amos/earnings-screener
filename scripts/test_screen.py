@@ -139,7 +139,9 @@ def test_breakout_setup_before_cross():
 def test_breakout_cross_uses_day_low_as_stop():
     d, pivot = build_bo(lambda p: (p - 1, p + 3, p - 4, p + 2, 2_000_000))
     r = analyze_breakout(d, CFG, RANK)
-    assert r["stage"] == "breakout" and r["stop"] == round(pivot - 4, 2), r
+    assert r["stage"] == "breakout" and r["stop_3d"] == round(pivot - 4, 2), r   # 影片 B：突破當天最低點（保留為可選）
+    r3 = analyze_breakout(d, {**CFG, "stop_method": "3d"}, RANK)
+    assert r3["stop"] == r["stop_3d"] and r3["stop_method"] == "3d"
 
 
 def test_breakout_needs_top_momentum_and_liquidity():
@@ -163,8 +165,11 @@ def test_breakout_too_short_consolidation_is_pending():
 
 def test_breakout_wide_stop_is_skipped():
     d, _ = build_bo(lambda p: (p - 1, p + 3, p - 40, p + 2, 2_000_000))   # 當天最低點離買點遠超過 ADR
-    r = analyze_breakout(d, CFG, RANK)
+    # 影片做法（止損＝突破當天最低點，上限 1 倍 ADR）：止損太遠 → 不合格
+    r = analyze_breakout(d, {**CFG, "stop_method": "3d", "bo_stop_max_adr_mult": 1.0}, RANK)
     assert r["risk_grade"] == "too_wide" and r["stage"] == "watch", r
+    # 預設做法（前一個轉折低點）：突破當天盤中下殺不影響止損位置，仍是合格的突破
+    assert analyze_breakout(d, CFG, RANK)["stage"] == "breakout"
 
 
 def test_momentum_ranks():
@@ -306,6 +311,24 @@ def test_stop_base_is_the_wider_option():
     bo, _ = build_bo()
     b = analyze_breakout(bo, CFG, RANK)
     assert b["stop_base"] <= b["stop"]
+
+
+def test_default_stop_is_previous_swing_low_after_the_peak():
+    d, pivot = build_bo(lambda p: (p - 1, p + 3, p - 4, p + 2, 2_000_000))
+    r = analyze_breakout(d, CFG, RANK)
+    assert r["stop_method"] == "swing" and r["stop"] == r["stop_swing"], r
+    assert r["stop_swing_date"] > r["peak_date"]                  # 轉折低點必須在高點之後的整理期
+    assert r["stop"] < r["pivot"] and r["stop_base"] <= r["stop"]  # 比整理區最低點高、比買點低
+
+
+def test_pead_swing_stop_and_fallback():
+    d = build(calm(8) + [(120, 126, 119, 125, 2_000_000)])
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    assert r["stop_3d"] is not None and r["stop_method"] in ("swing", "3d")
+    if r["stop_method"] == "swing":
+        assert r["stop"] == r["stop_swing"] and r["stop_swing_date"] > r["reaction_date"]
+    old = analyze(d, find_gap_day(d, CFG), {**CFG, "stop_method": "3d"})
+    assert old["stop"] == old["stop_3d"] == r["stop_3d"] and old["stop_method"] == "3d"
 
 
 def test_regime():
