@@ -4,7 +4,17 @@
 
   function candleSvg(rows, opts = {}) {
     if (!rows || rows.length < 3) return "";
-    const W = 580, H = 300, PL = 6, PR = 118, PT = 16, PB = 22, VOL = 48, GAP = 8;
+    const W = 580, H = 300, PL = 6, PR = 118, PB = 22, VOL = 48, GAP = 8;
+    const n0 = rows.length, step0 = (W - PL - PR) / n0;
+    // 日期標記（財報反應日、轉折低、突破）：靠得近的標記錯開成最多 3 列，文字才不會疊在一起
+    const marks = (opts.marks || []).map((m) => ({ ...m, i: rows.findIndex((r) => r[0] === m.date) })).filter((m) => m.i >= 0).sort((a, b) => a.i - b.i);
+    const rowEnd = [-1e9, -1e9, -1e9];
+    for (const m of marks) {
+      const x0 = PL + (m.i + 0.5) * step0 + 3, w = String(m.label).length * 12 + 6;
+      m.row = [0, 1, 2].find((r) => x0 >= rowEnd[r]) ?? 2;
+      rowEnd[m.row] = x0 + w;
+    }
+    const PT = 14 + 14 * (marks.length ? Math.max(...marks.map((m) => m.row)) : 0);
     const priceH = H - PT - PB - VOL - GAP;
     const levels = (opts.levels || []).filter((l) => l.y != null);
     const lows = rows.map((r) => r[3]), highs = rows.map((r) => r[2]);
@@ -19,11 +29,10 @@
     let out = "";
 
     // 日期標記（財報反應日、突破日）
-    for (const m of opts.marks || []) {
-      const i = rows.findIndex((r) => r[0] === m.date);
-      if (i < 0) continue;
-      out += `<line class="ch-mark" x1="${x(i)}" x2="${x(i)}" y1="${PT}" y2="${volTop + VOL}"/>` +
-             `<text class="ch-note" x="${Math.min(x(i) + 3, W - PR - 36)}" y="${PT + 8}">${esc(m.label)}</text>`;
+    for (const m of marks) {
+      const top = 8 + m.row * 14;
+      out += `<line class="ch-mark" x1="${x(m.i)}" x2="${x(m.i)}" y1="${top}" y2="${volTop + VOL}"/>` +
+             `<text class="ch-note" x="${Math.min(x(m.i) + 3, W - PR - 36)}" y="${top + 4}">${esc(m.label)}</text>`;
     }
     // 成交量
     rows.forEach((r, i) => {

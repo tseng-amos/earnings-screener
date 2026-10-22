@@ -19,12 +19,23 @@
   // ───────── 狀態 ─────────
   const DEFAULTS = { account: 100000, riskPct: 0.5, maxPosPct: 0, theme: "auto", color: "cn", stopMode: "default", riskMaxMult: 0, wide: false };
   const S = {
-    cfg: null, data: null, tab: "pead", sel: {}, composing: false,
+    cfg: null, data: null, tab: "pead", sel: {}, composing: false, season: null, hist: null, histError: null,
     ui: LS.get("pb.ui", {}),
     set: { ...DEFAULTS, ...LS.get("pb.settings", {}) },
     notes: LS.get("pb.notes", {}),
   };
   const ui = (lane) => (S.ui[lane] ||= { stage: null, sort: null, dir: -1, q: "" });
+  // 財報季：當季用即時資料（screen.json），過去的季度用累積的歷史紀錄（history.json，選到才載入）
+  const isHistory = (lane) => lane === "pead" && !!S.data.seasons && !!S.season && S.season !== S.data.seasons.current;
+  const seasonInfo = () => (S.data.seasons?.list || []).find((s) => s.id === S.season);
+  async function loadHistory() {
+    if (S.hist || S.histError) return;
+    try {
+      const r = await fetch("data/history.json", { cache: "no-cache" });
+      if (!r.ok) throw new Error(`data/history.json (${r.status})`);
+      S.hist = (await r.json()).records || [];
+    } catch (e) { S.histError = e.message; }
+  }
   const weak = () => S.data?.regime?.status === "weak";
   const narrow = () => matchMedia("(max-width: 1020px)").matches;
   const saveUi = () => LS.set("pb.ui", S.ui);
@@ -43,7 +54,8 @@
   const RISK_LABEL = { ideal: "≤1×ADR，理想", acceptable: "≤1.5×ADR，可接受", too_wide: ">1.5×ADR，不建議" };
   const LANES = {
     pead: {
-      stages: ["breakout", "consolidating", "watch", "extended", "removed"], items: () => S.data.pead,
+      stages: ["breakout", "consolidating", "watch", "extended", "removed"],
+      items: () => (isHistory("pead") ? (S.hist || []).filter((r) => r.season === S.season) : S.data.pead),
       id: (c) => `${c.symbol}|${c.reaction_date}`, noteKey: (c) => `pead:${c.symbol}:${c.reaction_date}`,
       hints: {
         breakout: "價格已越過整理區高點。影片：越過就買、止損放突破前最後幾天最低點；日線看不到盤中，所以標出「收盤是否站上」。",
@@ -110,6 +122,18 @@
       { k: "risk", label: "風險／ADR", num: 1, title: "買點到止損的距離，除以財報前平時一天的平均振幅（ADR）。影片：不超過 1 倍理想、1.5 倍可接受。", render: riskCellFor("pead"), val: (c) => stopOf("pead", c).risk, dir: 1 },
       { k: "dist", label: "距買點", num: 1, render: distCell, val: (c) => c.dist_to_pivot_pct, dir: 1 },
     ],
+    pead_history: [
+      { k: "symbol", label: "代號", render: symCell, val: (c) => c.symbol, dir: 1 },
+      { k: "stage", label: "最終階段", title: "到最新資料為止的階段（當時入選，之後走到哪）。", render: (c) => `<span class="stage s-${c.stage}">${STAGE_LABEL[c.stage]}</span>`, val: (c) => priority("pead", c) },
+      { k: "reaction_date", label: "反應日", render: (c) => `${md(c.reaction_date)} <small class="muted">${timeTag(c)}</small>`, val: (c) => c.reaction_date },
+      { k: "gain_pct", label: "漲幅", num: 1, render: (c) => `<span class="up">${pct(c.gain_pct, 1, true)}</span>`, val: (c) => c.gain_pct },
+      { k: "ep", label: "EP", num: 1, cls: "lo", render: (c) => `${c.ep_score ?? "—"}/5`, val: (c) => c.ep_score },
+      { k: "breakout_date", label: "突破日", num: 1, render: (c) => (c.breakout_date ? md(c.breakout_date) : "—"), val: (c) => c.breakout_date },
+      { k: "pivot", label: "買點", num: 1, cls: "lo", render: (c) => num(c.pivot), val: (c) => c.pivot },
+      { k: "max_since", label: "突破後最高", num: 1, title: "以買點進場、之後出現的最高價，相對買點的漲幅。事後紀錄，不含止損與出場。", render: (c) => (c.max_since_breakout_pct == null ? "—" : `<span class="up">${pct(c.max_since_breakout_pct, 1, true)}</span>`), val: (c) => c.max_since_breakout_pct },
+      { k: "since", label: "目前", num: 1, title: "最新收盤相對買點。", render: (c) => (c.since_breakout_pct == null ? "—" : `<span class="${c.since_breakout_pct >= 0 ? "up" : "down"}">${pct(c.since_breakout_pct, 1, true)}</span>`), val: (c) => c.since_breakout_pct },
+      { k: "removed_on", label: "失效日", num: 1, cls: "lo", render: (c) => (c.removed_on ? md(c.removed_on) : "—"), val: (c) => c.removed_on },
+    ],
     pead_removed: [
       { k: "symbol", label: "代號", render: symCell, val: (c) => c.symbol, dir: 1 },
       { k: "stage", label: "階段", render: stageCell, val: (c) => priority("pead", c) },
@@ -145,7 +169,7 @@
     ],
   };
 
-  const colsFor = (lane) => (lane === "pead" && ui("pead").stage === "removed" ? COLS.pead_removed : COLS[lane]);
+  const colsFor = (lane) => (isHistory(lane) ? COLS.pead_history : lane === "pead" && ui("pead").stage === "removed" ? COLS.pead_removed : COLS[lane]);
 
   // ───────── 頁首：大盤與資料狀態 ─────────
   function renderRegime() {
@@ -181,10 +205,30 @@
   }
 
   // ───────── 清單（左）與詳情（右）─────────
+  const SEASON_MONTHS = { 1: "1～3 月財報季（上年度 Q4）", 2: "4～6 月財報季（Q1）", 3: "7～9 月財報季（Q2）", 4: "10～12 月財報季（Q3）" };
+  const seasonLabel = (id) => `${id.slice(0, 4)} 年 ${SEASON_MONTHS[id.slice(-1)]}`;
+  function seasonSelectHtml() {
+    const cur = S.data.seasons.current, list = S.data.seasons.list || [];
+    const opts = list.some((s) => s.id === cur) ? list : [{ id: cur, label: seasonLabel(cur), count: 0 }, ...list];
+    return `<label class="seasonpick">財報季 <select id="season-pead" aria-label="財報季">${opts.map((s) =>
+      `<option value="${esc(s.id)}" ${s.id === S.season ? "selected" : ""}>${esc(s.label)}${s.id === cur ? "（當季）" : ""}　${s.count} 檔</option>`).join("")}</select></label>`;
+  }
+
+  function pickStage(lane) {   // 開啟頁面或換季時，自動選第一個有標的的階段；之後使用者點哪個就顯示哪個（包含空的）
+    const u = ui(lane), items = LANES[lane].items();
+    if (!items.some((c) => c.stage === u.stage)) u.stage = LANES[lane].stages.find((st) => items.some((c) => c.stage === st)) || LANES[lane].stages[0];
+  }
+  async function setSeason(id) {
+    S.season = id; S.sel.pead = null;
+    if (isHistory("pead") && !S.hist) { renderLane("pead"); await loadHistory(); }
+    pickStage("pead"); renderLane("pead");
+  }
+
   function buildLane(lane) {
     $(`#tab-${lane}`).innerHTML = `
       <p class="lede" id="lede-${lane}"></p>
       <div class="toolbar">
+        ${lane === "pead" && S.data.seasons ? seasonSelectHtml() : ""}
         <div class="stages" id="stages-${lane}"></div>
         <input type="search" id="q-${lane}" placeholder="搜尋代號或公司" aria-label="搜尋">
         <span class="spacer"></span>
@@ -204,7 +248,7 @@
     const u = ui(lane), q = (u.q || "").trim().toLowerCase();
     let items = LANES[lane].items().filter((c) => c.stage === u.stage);
     if (q) items = items.filter((c) => `${c.symbol} ${c.name || ""}`.toLowerCase().includes(q));
-    const col = colsFor(lane).find((x) => x.k === u.sort) || colsFor(lane)[1];
+    const col = colsFor(lane).find((x) => x.k === u.sort) || (isHistory(lane) ? colsFor(lane)[2] : colsFor(lane)[1]);
     const dir = u.sort ? u.dir : -1;
     return items.sort((a, b) => {
       const x = col.val(a), y = col.val(b);
@@ -219,7 +263,7 @@
     const count = (s) => all.filter((c) => c.stage === s).length;
     $(`#stages-${lane}`).innerHTML = L.stages.map((s) =>
       `<button class="s-${s}" style="--c:var(--${s === "breakout" ? "hot" : s === "consolidating" || s === "setup" ? "amber" : "muted"})" data-stage="${s}" aria-pressed="${u.stage === s}">${STAGE_LABEL[s]}<span class="n">${count(s)}</span></button>`).join("");
-    $(`#hint-${lane}`).textContent = L.hints[u.stage] || "";
+    $(`#hint-${lane}`).textContent = isHistory(lane) ? "財報季紀錄：階段是「到最新資料為止」的結果。「突破後最高」與「目前」是以買點進場的事後價格紀錄，不含止損與出場，不是績效。" : (L.hints[u.stage] || "");
     renderLede(lane);
 
     const rows = visibleItems(lane);
@@ -232,6 +276,12 @@
   }
 
   function renderLede(lane) {
+    if (isHistory(lane)) {
+      const si = seasonInfo() || {}, st = si.stages || {};
+      $(`#lede-${lane}`).innerHTML = S.histError ? `歷史紀錄載入失敗：${esc(S.histError)}` : !S.hist ? "讀取歷史紀錄中…"
+        : `<b>${esc(si.label || S.season)}</b>：當時共 <b>${si.count ?? 0}</b> 檔入選，其中 <b>${si.broke ?? 0}</b> 檔後來突破${si.median_max_since_breakout_pct != null ? `（突破後最高漲幅中位數 ${pct(si.median_max_since_breakout_pct, 1, true)}）` : ""}、失效 ${st.removed ?? 0} 檔。<span class="src">這是事後紀錄：數字會隨最新價格更新，樣本小、不含止損與出場，只能拿來看這一季的行情長什麼樣，不能當績效。</span>`;
+      return;
+    }
     const L = LANES[lane], all = L.items(), D = S.data, sum = D.summary || {};
     const n = (s) => all.filter((c) => c.stage === s).length;
     const lead = lane === "pead"
@@ -250,6 +300,10 @@
   }
 
   function verdict(lane, c) {
+    if (isHistory(lane) && c.stage !== "removed") {
+      const out = c.breakout_date ? `突破日 ${md(c.breakout_date)}（買點 ${num(c.pivot)}），突破後最高 ${pct(c.max_since_breakout_pct, 1, true)}，最新收盤相對買點 ${pct(c.since_breakout_pct, 1, true)}。` : "到最新資料還沒有突破。";
+      return `${STAGE_LABEL[c.stage]}：${out}`;
+    }
     if (c.stage === "removed") return `收盤已在 ${md(c.removed_on)} 跌破反應日最低點 ${num(c.reaction_low)}，依影片規則移出觀察。`;
     if (c.stage === "breakout") {
       const when = c.days_since_breakout === 0 ? "今天" : `${md(c.breakout_date)}（突破後第 ${c.days_since_breakout + 1} 日）`;
@@ -293,7 +347,7 @@
     const row = (a, b) => `<dt>${a}</dt><dd>${b}</dd>`, sp = stopOf(lane, c);
     const common = row("買點", num(c.pivot)) + row("止損", num(sp.v)) + row("風險", sp.risk == null ? "—" : `${num(sp.risk, 1)}%`) + row("平時日波動", pct(c.adr_pct, 1));
     const own = lane === "pead"
-      ? row("進場價", c.entry_price == null ? "—" : num(c.entry_price)) + row("評級", sp.grade ? RISK_LABEL[sp.grade] : "—") + row("反應日低點", num(c.reaction_low)) + row("最大回落", pct(c.max_pullback_pct, 1)) + row("整理天數", `${c.cons_days ?? 0} 日`) + row("下次財報", c.next_earnings ? `${md(c.next_earnings)}（${daysTo(c.next_earnings)}天）` : "未知")
+      ? row("進場價", c.entry_price == null ? "—" : num(c.entry_price)) + row("評級", sp.grade ? RISK_LABEL[sp.grade] : "—") + row("反應日低點", num(c.reaction_low)) + row("最大回落", pct(c.max_pullback_pct, 1)) + row("整理天數", `${c.cons_days ?? 0} 日`) + row("下次財報", c.next_earnings === undefined ? "—" : c.next_earnings ? `${md(c.next_earnings)}（${daysTo(c.next_earnings)}天）` : "未知")
       : row("進場價", c.entry_price == null ? "—" : num(c.entry_price)) + row("評級", sp.grade ? RISK_LABEL[sp.grade] : "—") + row("動能 1／3／6月", `${num(c.rank_1m, 0)}／${num(c.rank_3m, 0)}／${num(c.rank_6m, 0)}`) + row("前段漲幅", pct(c.runup_pct, 0)) + row("整理天數", `${c.cons_days} 日`) + row("下次財報", c.next_earnings ? `${md(c.next_earnings)}（${daysTo(c.next_earnings)}天）` : "未知");
     return `<h3>價位</h3><dl class="levels">${common}${own}</dl>`;
   }
@@ -342,7 +396,7 @@
       <h2>${esc(c.symbol)} ${changeTag(c)}</h2>
       <div class="sub">${esc(c.name || "")} · <a href="${tv(c.symbol)}" target="_blank" rel="noopener">TradingView 圖表 ↗</a>${lane === "pead" ? ` · 財報 ${md(c.earnings_date)} ${esc(c.earnings_time || "")}` : ""}</div>
       <p class="verdict">${verdict(lane, c)}</p>
-      ${chartHtml(c, lane)}${c.stage === "removed" ? removedHtml(c) : `${levelsHtml(lane, c)}${stopPickerHtml(lane, c)}${sizingHtml(lane, c)}
+      ${chartHtml(c, lane)}${c.stage === "removed" ? removedHtml(c) : `${levelsHtml(lane, c)}${isHistory(lane) ? "" : stopPickerHtml(lane, c) + sizingHtml(lane, c)}
       ${lane === "pead" ? checksHtml("整理條件（影片 A）", c.checks) + checksHtml("EP 品質（影片 B）", c.ep_checks) : checksHtml("形態條件（影片 B）", c.checks)}
       ${keyHtml}${manualHtml(lane, c)}`}`;
   }
@@ -424,6 +478,9 @@
         ["跟蹤", "剩餘倉位跟 10／20／50 日線，第一次收盤跌破就全賣；盤中不算", "持倉頁依 exit_ma 判斷（預設 20 日）"],
         ["財報前", "剩餘倉位獲利不到 20% 就先賣", `距財報 ≤${c.hold_earnings_days} 天且獲利 <${c.hold_min_profit_to_hold_earnings_pct}% → 該賣出`],
       ])}
+      <h2>財報季與歷史紀錄</h2>
+      <p>影片：一年有四個財報季。本站依<b>財報日所在的季度</b>分組：1～3 月公布的是上年度 Q4、4～6 月是 Q1、7～9 月是 Q2、10～12 月是 Q3。「財報後 PEAD／EP」頁上方的<b>財報季</b>選單可切換：<b>當季</b>看即時清單；<b>過去的季度</b>看歷史紀錄——當時入選的每一檔，到最新資料為止走到哪個階段、突破後最高漲了多少。</p>
+      <p class="src">歷史紀錄靠一次次接力累積：首次部署時用已抓到的一年價格與日曆回補，之後每次更新都把新結果併進上次部署的 <code>history.json</code>（Actions 快取當備援，兩份取聯集）。只有兩份都遺失時才會重新回補近一年，更早的季度就不見了，所以請不要刪除 Actions 快取又重建 repo。「突破後最高」「目前」只是事後價格紀錄，不含止損與出場，不是績效。</p>
       <h2>大盤濾網</h2>
       <p>看那斯達克：<b>10 日線在 20 日線之上且兩線都向上</b>＝正常做；有一條走平或拐頭＝小心、縮小倉位；<b>10 日線在 20 日線下且兩線向下</b>＝突破容易失敗，少做小做（影片提到 2022～2023 年大多靠 EP）。「向上」是指今天的均線比 3 個交易日前高。頁首會逐項列出三個條件，哪一項沒過就直接標出來。本站在弱勢時把「突破」排到「待突破」之後並加註警示。</p>
       <h2>本站刻意不做</h2>
@@ -508,6 +565,7 @@
       const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length]; next.focus(); setTab(next.dataset.tab);
     });
     $("#scrim").addEventListener("click", closeSheet);
+    $("#season-pead")?.addEventListener("change", (e) => setSeason(e.target.value));
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
 
     for (const lane of ["pead", "breakout", "hold"]) {
@@ -612,10 +670,8 @@
       return;
     }
     renderRegime(); buildLane("pead"); buildLane("breakout"); buildHold(); bind();
-    for (const lane of ["pead", "breakout"]) {   // 開啟時才自動挑第一個有標的的階段；之後使用者點哪個就顯示哪個（包含空的）
-      const u = ui(lane), items = LANES[lane].items();
-      if (!items.some((c) => c.stage === u.stage)) u.stage = LANES[lane].stages.find((st) => items.some((c) => c.stage === st)) || LANES[lane].stages[0];
-    }
+    S.season = S.data.seasons?.current || null;
+    ["pead", "breakout"].forEach(pickStage);
     renderLane("pead"); renderLane("breakout"); renderHold(); renderRules(); renderSettings();
     const first = ["pead", "breakout"].find((l) => LANES[l].items().some((c) => c.stage === "breakout"));
     if (first && first !== "pead" && !LANES.pead.items().some((c) => c.stage === "breakout")) setTab(first);

@@ -440,3 +440,39 @@ def evaluate_holding(d: pd.DataFrame, row: dict, cfg: dict, days_to_earnings: in
             "partial_done": partial_done, "held_days": held, "pnl_pct": round(pnl, 1), "last_close": round(float(last["Close"]), 2),
             "last_date": d.index[-1].strftime("%Y-%m-%d"), "days_to_earnings": days_to_earnings, "status": status,
             "actions": [{"level": lv, "text": tx} for lv, tx in actions], "note": row.get("note", "")}
+
+
+# ───────── 財報季（一年四季）與歷史紀錄 ─────────
+# 依「財報日」所在的日曆季度分組：1～3 月公布的是上年度 Q4、4～6 月是 Q1、7～9 月是 Q2、10～12 月是 Q3。
+SEASONS = {1: ("1～3 月", "上年度 Q4"), 2: ("4～6 月", "Q1"), 3: ("7～9 月", "Q2"), 4: ("10～12 月", "Q3")}
+
+
+def season_of(date_iso: str) -> tuple[str, str]:
+    """回傳 (季別代碼, 顯示名稱)，例如 ("2026-S4", "2026 年 10～12 月財報季（Q3）")。"""
+    year, month = int(date_iso[:4]), int(date_iso[5:7])
+    q = (month - 1) // 3 + 1
+    months, reported = SEASONS[q]
+    return f"{year}-S{q}", f"{year} 年 {months}財報季（{reported}）"
+
+
+def find_gap_days(d: pd.DataFrame, cfg: dict) -> list[int]:
+    """整段資料裡所有「漲 ≥ min_gain_pct 且量 ≥ 均量 min_volume_ratio 倍」的交易日位置（歷史回補用，不限回看期）。"""
+    hit = (d["ret"] >= cfg["min_gain_pct"]) & (d["vol_ratio"] >= cfg["min_volume_ratio"])
+    return [i for i in range(1, len(d)) if bool(hit.iloc[i])]
+
+
+def outcome_since_breakout(d: pd.DataFrame, breakout_date: str | None, entry: float | None) -> dict:
+    """事後紀錄：突破（以買點進場）之後，最高漲到多少、現在在哪。只是事實紀錄，不含止損與出場，不是績效。"""
+    if not breakout_date or not entry:
+        return {"max_since_breakout_pct": None, "since_breakout_pct": None}
+    seg = d.loc[breakout_date:]
+    return {"max_since_breakout_pct": round((float(seg["High"].max()) / entry - 1) * 100, 1),
+            "since_breakout_pct": round((float(d["Close"].iloc[-1]) / entry - 1) * 100, 1)}
+
+
+def chart_window(d: pd.DataFrame, start_pos: int, end_pos: int) -> list:
+    """歷史紀錄的迷你 K 線：事件前後固定一段 [start_pos, end_pos)，不是「最近 N 根」。"""
+    seg = d.iloc[max(start_pos, 0):max(end_pos, 0)]
+    clean = lambda v: None if pd.isna(v) else round(float(v), 2)  # noqa: E731
+    return [[idx.strftime("%Y-%m-%d"), clean(r.Open), clean(r.High), clean(r.Low), clean(r.Close), int(r.Volume), clean(r.sma50)]
+            for idx, r in seg.iterrows()]

@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 import fetch_data
-from fetch_data import annotate_changes, build_screen, load_holdings
+from fetch_data import (annotate_changes, build_history, build_screen, load_holdings, merge_history, season_index, union_history)
 from test_screen import build, build_bo, calm
 
 CFG = json.loads((Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
@@ -138,6 +138,49 @@ def test_report_time_is_inferred_from_reaction_day():
     events[0]["time"] = "時間未定"
     out = build_screen(prices, events, {"status": "strong"}, CFG, date(2026, 11, 20))
     assert out["pead"][0]["earnings_time"] == "盤後（推定）"
+
+
+def _history_inputs():
+    prices, events = _screen_inputs()
+    return prices, events
+
+
+def test_history_records_season_outcome_and_carry_over():
+    prices, events = _history_inputs()
+    recs = build_history(prices, events, CFG)
+    assert len(recs) == 1 and recs[0]["symbol"] == "PEAD1" and recs[0]["season"].startswith("2026-S") and recs[0]["stage"] == "breakout"
+    assert recs[0]["max_since_breakout_pct"] is not None and recs[0]["chart"][0][0] <= recs[0]["reaction_date"]
+    today = date(2026, 11, 20)
+    merged = merge_history([], recs, today)
+    assert merged[0]["first_seen"] == "2026-11-20"
+    # 隔天重跑：同一筆被更新，但保留第一次看到的日期；這次沒算到的舊紀錄原樣留著
+    old = {**recs[0], "symbol": "OLD", "reaction_date": "2025-11-05", "season": "2025-S4", "stage": "removed", "updated": "2025-12-01", "first_seen": "2025-11-06"}
+    again = merge_history(merge_history([old], recs, today), recs, date(2026, 11, 21))
+    by = {r["symbol"]: r for r in again}
+    assert by["PEAD1"]["first_seen"] == "2026-11-20" and by["PEAD1"]["updated"] == "2026-11-21"
+    assert by["OLD"]["stage"] == "removed" and by["OLD"]["updated"] == "2025-12-01"
+    # 兩份來源（上次部署／快取）取聯集，同一筆以較新的為準
+    a, b = [{**old, "stage": "watch", "updated": "2026-01-01"}], [{**old, "updated": "2026-02-01"}, {**old, "symbol": "ONLYB"}]
+    u = {r["symbol"]: r for r in union_history(a, b)}
+    assert u["OLD"]["stage"] == "removed" and "ONLYB" in u
+    idx = season_index(again)
+    assert [s["id"] for s in idx] == sorted({r["season"] for r in again}, reverse=True) and idx[0]["count"] >= 1
+    assert idx[0]["label"].endswith("）") and idx[0]["stages"]
+
+
+def test_main_writes_history_and_keeps_old_seasons():
+    prices, events = _screen_inputs()
+    tmp = Path(tempfile.mkdtemp())
+    old = {"symbol": "OLD", "name": "Old Co", "reaction_date": "2025-08-05", "season": "2025-S3", "earnings_date": "2025-08-04", "stage": "removed",
+           "gain_pct": 12.0, "updated": "2025-09-01", "first_seen": "2025-08-06"}
+    (tmp / "hist_prev.json").write_text(json.dumps({"records": [old]}), encoding="utf-8")
+    first = _run_main(tmp, events, prices, ["--history-prev", str(tmp / "hist_prev.json"), "--cache", str(tmp / "cache")])
+    hist = json.loads((tmp / "out" / "history.json").read_text(encoding="utf-8"))["records"]
+    assert {r["symbol"] for r in hist} == {"OLD", "PEAD1"} and (tmp / "cache" / "history.json").exists()
+    assert first["seasons"]["carried_over"] == 1 and {s["id"] for s in first["seasons"]["list"]} >= {"2025-S3"}
+    # 上次部署的檔案遺失時，由快取接力，舊季度不會消失
+    again = _run_main(tmp, events, prices, ["--cache", str(tmp / "cache")])
+    assert any(s["id"] == "2025-S3" for s in again["seasons"]["list"])
 
 
 if __name__ == "__main__":

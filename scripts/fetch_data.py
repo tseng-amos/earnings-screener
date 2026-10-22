@@ -16,8 +16,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import sources  # noqa: E402
-from screen import (analyze, analyze_breakout, chart_rows, ep_quality, evaluate_holding, find_gap_day,  # noqa: E402
-                    market_regime, match_event, momentum_ranks, prepare)
+from screen import (analyze, analyze_breakout, chart_rows, chart_window, ep_quality, evaluate_holding, find_gap_day,  # noqa: E402
+                    find_gap_days, market_regime, match_event, momentum_ranks, outcome_since_breakout, prepare, season_of)
 
 ROOT = Path(__file__).resolve().parent.parent
 log = sources.log
@@ -97,6 +97,94 @@ def build_screen(prices: dict[str, pd.DataFrame], events: list[dict], regime: di
             "holdings": held, "summary": {"pead": count(pead), "breakout": count(breakout)}}
 
 
+# ───────── 財報季歷史紀錄 ─────────
+# 每個「財報大漲日」都留一筆紀錄，依財報日所在的季別分組。紀錄只增不減：
+# 重跑時用最新價格更新階段與事後結果；價格資料已經不夠新（超過一年）的紀錄維持最後一次的內容。
+HISTORY_FIELDS = ("reaction_date", "gain_pct", "volume_ratio", "reaction_low", "stage", "pivot", "stop", "stop_method", "stop_3d",
+                  "stop_base", "stop_swing", "stop_swing_date", "entry_price", "risk_pct", "adr_pct", "risk_grade", "breakout_date",
+                  "days_since_breakout", "close_confirmed", "removed_on", "cons_days", "max_pullback_pct", "dist_to_pivot_pct",
+                  "last_close", "last_date")
+
+
+def history_key(rec: dict) -> str:
+    return f"{rec['symbol']}|{rec['reaction_date']}"
+
+
+def build_history(prices: dict[str, pd.DataFrame], events: list[dict], cfg: dict) -> list[dict]:
+    """價格資料涵蓋範圍內，所有「財報帶動的大漲日」各一筆（不限回看期）。"""
+    by_symbol: dict[str, list[dict]] = {}
+    for event in events:
+        by_symbol.setdefault(event["symbol"], []).append(event)
+    records = []
+    for symbol, df in prices.items():
+        history = by_symbol.get(symbol)
+        if not history:
+            continue
+        d = prepare(df)
+        taken: set[str] = set()
+        for pos in find_gap_days(d, cfg):
+            event = match_event(d, pos, history)
+            if event is None or event["date"] in taken:      # 同一次財報只算第一個大漲日
+                continue
+            taken.add(event["date"])
+            result = analyze(d, pos, cfg)
+            ep = ep_quality(d, pos, event, cfg)
+            season_id, _ = season_of(event["date"])
+            rec = {k: result.get(k) for k in HISTORY_FIELDS}
+            rec.update(symbol=symbol, name=event.get("name", ""), season=season_id, earnings_date=event["date"],
+                       earnings_time=report_time(event, result["reaction_date"]), eps_surprise_pct=event.get("eps_surprise_pct"),
+                       ep_score=ep["ep_score"], ep_unknown=ep["ep_unknown"], gap_open_pct=ep["gap_open_pct"],
+                       **outcome_since_breakout(d, result.get("breakout_date"), result.get("entry_price") or result.get("pivot")),
+                       chart=chart_window(d, pos - 6, pos + 1 + cfg["history_chart_after_bars"]))
+            records.append(rec)
+    return records
+
+
+def merge_history(existing: list[dict], new: list[dict], today: date) -> list[dict]:
+    """新結果覆蓋同一筆舊紀錄（保留第一次看到的日期）；這次沒有重算到的舊紀錄原樣保留。"""
+    merged = {history_key(r): r for r in existing}
+    for rec in new:
+        old = merged.get(history_key(rec))
+        rec["first_seen"] = (old or {}).get("first_seen") or today.isoformat()
+        rec["updated"] = today.isoformat()
+        merged[history_key(rec)] = rec
+    return sorted(merged.values(), key=lambda r: (r["reaction_date"], r["symbol"]), reverse=True)
+
+
+def union_history(a: list[dict], b: list[dict]) -> list[dict]:
+    """兩份歷史（上次部署的網站、Actions 快取）取聯集；同一筆以較新的為準。任何一份遺失時另一份還能接力。"""
+    out = {history_key(r): r for r in a}
+    for r in b:
+        k = history_key(r)
+        if k not in out or (r.get("updated") or "") > (out[k].get("updated") or ""):
+            out[k] = r
+    return list(out.values())
+
+
+def season_index(records: list[dict]) -> list[dict]:
+    """各季摘要（放在 screen.json，網頁不用先載入整份歷史就能做季度選單）。"""
+    seasons: dict[str, list[dict]] = {}
+    for r in records:
+        seasons.setdefault(r["season"], []).append(r)
+    out = []
+    for sid, recs in sorted(seasons.items(), reverse=True):
+        broke = [r["max_since_breakout_pct"] for r in recs if r.get("max_since_breakout_pct") is not None]
+        broke.sort()
+        mid = None if not broke else round(broke[len(broke) // 2] if len(broke) % 2 else (broke[len(broke) // 2 - 1] + broke[len(broke) // 2]) / 2, 1)
+        out.append({"id": sid, "label": season_of(recs[0]["earnings_date"])[1], "count": len(recs),
+                    "stages": {k: sum(r["stage"] == k for r in recs) for k in sorted({r["stage"] for r in recs})},
+                    "broke": len(broke), "median_max_since_breakout_pct": mid})
+    return out
+
+
+def load_records(path: Path | None) -> list[dict]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
+    except ValueError:
+        return []
+    return [r for r in data.get("records", []) if isinstance(r, dict) and r.get("symbol") and r.get("reaction_date") and r.get("season")]
+
+
 LANES = (("pead", lambda c: f"{c['symbol']}|{c['reaction_date']}"), ("breakout", lambda c: c["symbol"]))
 
 
@@ -144,6 +232,7 @@ def main() -> None:
     parser.add_argument("--out", default=str(ROOT / "data"))
     parser.add_argument("--cache", default=None, help="快取資料夾；省略則不使用快取")
     parser.add_argument("--prev", default=None, help="上一次部署的 screen.json（用來標示新增與階段改變）")
+    parser.add_argument("--history-prev", default=None, help="上一次部署的 history.json（財報季歷史紀錄的接力來源）")
     args = parser.parse_args()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -153,7 +242,7 @@ def main() -> None:
     today = now.date()
     month_start = today.replace(day=1)
     calendar_end = (month_start + timedelta(days=62)).replace(day=1) - timedelta(days=1)
-    calendar_start = (month_start - timedelta(days=75)).replace(day=1)   # 要涵蓋整個股票池的一個財報週期
+    calendar_start = min((month_start - timedelta(days=75)).replace(day=1), today - timedelta(days=cfg["history_backfill_days"]))   # 涵蓋股票池的一個財報週期，並回補過去一年的財報季
 
     events, failed_days = sources.fetch_events(calendar_start, calendar_end, cfg["us_min_mcap_usd"],
                                                cache_dir / "events.json" if cache_dir else None, today)
@@ -198,6 +287,18 @@ def main() -> None:
         except ValueError:
             prev = None
     annotate_changes(result, prev)
+
+    # 財報季歷史：先回補／更新，再與上次部署的網站、快取裡的舊紀錄合併（任何一份遺失都不會丟資料）
+    existing = union_history(load_records(Path(args.history_prev) if args.history_prev else None),
+                             load_records(cache_dir / "history.json" if cache_dir else None))
+    history = merge_history(existing, build_history(prices, events, cfg), today)
+    payload = json.dumps({"generated_at": now.isoformat(timespec="seconds"), "records": history}, ensure_ascii=False)
+    (out_dir / "history.json").write_text(payload, encoding="utf-8")
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "history.json").write_text(payload, encoding="utf-8")
+    result["seasons"] = {"current": season_of(today.isoformat())[0], "list": season_index(history),
+                         "carried_over": len(existing)}
     counts = {name: sum(v == name for v in price_sources.values()) for name in ("yahoo", "cache", "stooq", "nasdaq")}
     result.update(
         generated_at=now.isoformat(timespec="seconds"),

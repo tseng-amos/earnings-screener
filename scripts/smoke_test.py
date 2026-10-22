@@ -76,6 +76,23 @@ def main() -> int:
                     for word in BAD_WORDS:
                         check(word not in detail, f"{lane} 詳情出現「{word}」")
 
+        # 財報季選單：每一季都能切換、載入歷史、不出現壞字，再切回當季
+        page.click('#tabs button[data-tab="pead"]')
+        if page.query_selector("#season-pead"):
+            values = page.eval_on_selector_all("#season-pead option", "e => e.map(o => o.value)")
+            current = data["seasons"]["current"]
+            for value in values:
+                page.select_option("#season-pead", value)
+                page.wait_for_function("() => !document.querySelector('#lede-pead').innerText.includes('讀取歷史紀錄中')")
+                text = page.inner_text("#tab-pead")
+                check("載入失敗" not in text, f"財報季 {value} 載入失敗")
+                for word in BAD_WORDS:
+                    check(word not in text, f"財報季 {value} 出現「{word}」")
+                expected = next((s["count"] for s in data["seasons"]["list"] if s["id"] == value), 0)
+                shown = sum(int(b.query_selector(".n").inner_text()) for b in page.query_selector_all("#stages-pead button")) if value != current else None
+                check(shown is None or shown == expected, f"財報季 {value}：階段按鈕合計 {shown} ≠ 摘要 {expected}")
+            page.select_option("#season-pead", current)
+
         # 倉位試算要隨「設定」改變
         page.click('#tabs button[data-tab="settings"]')
         page.fill("#set-account", "250000")

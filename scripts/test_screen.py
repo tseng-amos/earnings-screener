@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from screen import (analyze, analyze_breakout, chart_rows, ep_quality, evaluate_holding, find_gap_day, market_regime,
-                    match_event, momentum_ranks, prepare)
+                    match_event, momentum_ranks, prepare, season_of, find_gap_days, outcome_since_breakout, chart_window)
 
 CFG = json.loads((Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
 
@@ -329,6 +329,32 @@ def test_pead_swing_stop_and_fallback():
         assert r["stop"] == r["stop_swing"] and r["stop_swing_date"] > r["reaction_date"]
     old = analyze(d, find_gap_day(d, CFG), {**CFG, "stop_method": "3d"})
     assert old["stop"] == old["stop_3d"] == r["stop_3d"] and old["stop_method"] == "3d"
+
+
+def test_season_of_groups_by_report_quarter():
+    assert season_of("2026-01-15") == ("2026-S1", "2026 年 1～3 月財報季（上年度 Q4）")
+    assert season_of("2026-04-30")[0] == "2026-S2" and season_of("2026-07-01")[0] == "2026-S3"
+    assert season_of("2026-10-21") == ("2026-S4", "2026 年 10～12 月財報季（Q3）")
+    assert season_of("2026-03-31")[0] == "2026-S1" and season_of("2026-12-31")[0] == "2026-S4"
+
+
+def test_find_gap_days_finds_every_event_not_just_the_latest():
+    d = build(calm(8) + [(120, 126, 119, 125, 2_000_000)])
+    d2 = extend(d, [(125, 126, 124, 125.5, 1_000_000)] * 5 + [(125.5, 150, 125, 148, 6_000_000)])    # 之後又一次大漲爆量
+    days = find_gap_days(d2, CFG)
+    assert 80 in days and len(d2) - 1 in days and find_gap_day(d2, CFG) == len(d2) - 1   # 單日版只會回報最近一次
+
+
+def test_outcome_since_breakout_is_a_plain_record():
+    d = build(calm(8) + [(120, 126, 119, 125, 2_000_000)])
+    d = extend(d, [(125, 140, 124, 130, 1_500_000), (130, 132, 126, 127, 1_000_000)])
+    r = analyze(d, find_gap_day(d, CFG), CFG)
+    o = outcome_since_breakout(d, r["breakout_date"], r["entry_price"])
+    assert o["max_since_breakout_pct"] == round((140 / r["entry_price"] - 1) * 100, 1)
+    assert o["since_breakout_pct"] == round((127 / r["entry_price"] - 1) * 100, 1)
+    assert outcome_since_breakout(d, None, None) == {"max_since_breakout_pct": None, "since_breakout_pct": None}
+    w = chart_window(d, 70, 90)
+    assert w[0][0] == d.index[70].strftime("%Y-%m-%d") and len(w) == 20 and len(w[0]) == 7
 
 
 def test_regime():
