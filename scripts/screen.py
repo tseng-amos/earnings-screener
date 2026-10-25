@@ -476,3 +476,72 @@ def chart_window(d: pd.DataFrame, start_pos: int, end_pos: int) -> list:
     clean = lambda v: None if pd.isna(v) else round(float(v), 2)  # noqa: E731
     return [[idx.strftime("%Y-%m-%d"), clean(r.Open), clean(r.High), clean(r.Low), clean(r.Close), int(r.Volume), clean(r.sma50)]
             for idx, r in seg.iterrows()]
+
+
+# ───────── 舊財報季的出場回測（20／50 日線止盈）─────────
+def signal_at_breakout(d: pd.DataFrame, pos: int, cfg: dict) -> dict | None:
+    """這次財報大漲的「第一次突破」當下是否構成訊號。只用突破當天以前的資料判斷（點時間點），
+    不受之後走勢影響——否則「突破後才跌破反應日最低點、被標成失效」的失敗案例會被排除，回測會被灌水。
+    回傳突破當天的 analyze 結果（含當時的進場價與止損）；不成立回傳 None。"""
+    n = len(d)
+    k = next((j for j in range(pos + 1 + cfg["min_consolidation_days"], n)
+              if d["High"].iloc[j] > d["High"].iloc[pos + 1:j].max()), None)
+    if k is None:
+        return None
+    res = analyze(d.iloc[:k + 1], pos, cfg)
+    return res if res["stage"] == "breakout" and res.get("breakout_date") == d.index[k].strftime("%Y-%m-%d") else None
+
+
+def simulate_exit(d: pd.DataFrame, k: int, entry: float, stop: float, ma_days: int | None, commission_bps: float,
+                  raise_from: tuple[int, float] | None = None) -> dict:
+    """第 k 根突破進場（買在 entry），之後依序檢查：
+      ① 止損：最低價 ≤ 止損 → 以止損價出場（跳空開在止損下方則以開盤價）。進場當天也檢查——日線看不出盤中先後，採保守假設。
+      ② 止盈（ma_days 有值）：收盤跌破 ma_days 日線 → 隔天開盤出場（已是最後一根則以收盤估算）。
+    止損預設固定不上移；raise_from=(位置, 價格) 時，從該位置起止損上移到該價格（例如第一批賣出後把止損移到成本）。
+    到資料結束仍未出場 → 以最後收盤計未了結。報酬已扣單邊手續費 ×2。"""
+    n = len(d)
+    ma = d["Close"].rolling(ma_days).mean() if ma_days else None
+    risk = (entry - stop) / entry * 100
+
+    def done(i: int, px: float, reason: str) -> dict:
+        ret = (px / entry - 1 - 2 * commission_bps / 1e4) * 100
+        return {"exit_date": d.index[min(i, n - 1)].strftime("%Y-%m-%d"), "exit_price": round(px, 2), "ret_pct": round(ret, 2),
+                "r": round(ret / risk, 2) if risk > 0 else None, "days": i - k, "reason": reason}
+
+    for i in range(k, n):
+        row = d.iloc[i]
+        cur_stop = max(stop, raise_from[1]) if raise_from is not None and i >= raise_from[0] else stop
+        if float(row["Low"]) <= cur_stop:
+            return done(i, min(float(row["Open"]), cur_stop) if i > k else cur_stop, "stop")
+        if ma is not None and i > k and pd.notna(ma.iloc[i]) and float(row["Close"]) < float(ma.iloc[i]):
+            return done(i + 1, float(d["Open"].iloc[i + 1]), "ma") if i + 1 < n else done(i, float(row["Close"]), "ma")
+    return done(n - 1, float(d["Close"].iloc[-1]), "open")
+
+
+def simulate_split(d: pd.DataFrame, k: int, entry: float, stop: float, commission_bps: float, breakeven: bool) -> dict:
+    """分兩批止盈：一半在收盤跌破 20 日線時賣、另一半在收盤跌破 50 日線時賣（各自隔天開盤出場），兩批共用同一個止損。
+    breakeven=True：第一批（20 日線）賣出後，剩下那批的止損移到成本（影片的做法）。報酬＝兩批各占一半的平均。"""
+    a = simulate_exit(d, k, entry, stop, 20, commission_bps)
+    raise_from = (int(d.index.get_loc(pd.Timestamp(a["exit_date"]))), entry) if breakeven and a["reason"] == "ma" else None
+    b = simulate_exit(d, k, entry, stop, 50, commission_bps, raise_from)
+    risk = (entry - stop) / entry * 100
+    ret = (a["ret_pct"] + b["ret_pct"]) / 2
+    reasons = {a["reason"], b["reason"]}
+    return {"ret_pct": round(ret, 2), "r": round(ret / risk, 2) if risk > 0 else None, "days": round((a["days"] + b["days"]) / 2, 1),
+            "reason": reasons.pop() if len(reasons) == 1 else "mixed", "legs": [a, b]}
+
+
+def backtest_record(d: pd.DataFrame, pos: int, cfg: dict) -> dict | None:
+    """對一次財報大漲：若突破當下成立訊號，跑五種做法——
+    split＝分兩批（20 日線賣一半、50 日線賣一半）、split_be＝同上但第一批賣出後止損移到成本、
+    ma20／ma50＝全部倉位只用單一均線出場（對照用）、hold＝只設止損持有到現在（對照用）。"""
+    sig = signal_at_breakout(d, pos, cfg)
+    if sig is None or sig.get("entry_price") is None or sig.get("stop") is None or sig["stop"] >= sig["entry_price"]:
+        return None
+    k = int(d.index.get_loc(pd.Timestamp(sig["breakout_date"])))
+    entry, stop, bps = sig["entry_price"], sig["stop"], cfg["backtest_commission_bps"]
+    return {"entry_date": sig["breakout_date"], "entry": entry, "stop": stop, "stop_method": sig.get("stop_method"),
+            "risk_pct": round((entry - stop) / entry * 100, 2),
+            "split": simulate_split(d, k, entry, stop, bps, False), "split_be": simulate_split(d, k, entry, stop, bps, True),
+            "ma20": simulate_exit(d, k, entry, stop, 20, bps), "ma50": simulate_exit(d, k, entry, stop, 50, bps),
+            "hold": simulate_exit(d, k, entry, stop, None, bps)}

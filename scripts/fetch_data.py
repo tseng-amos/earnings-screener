@@ -17,7 +17,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 import sources  # noqa: E402
 from screen import (analyze, analyze_breakout, chart_rows, chart_window, ep_quality, evaluate_holding, find_gap_day,  # noqa: E402
-                    find_gap_days, market_regime, match_event, momentum_ranks, outcome_since_breakout, prepare, season_of)
+                    find_gap_days, backtest_record, market_regime, match_event, momentum_ranks, outcome_since_breakout, prepare, season_of)
 
 ROOT = Path(__file__).resolve().parent.parent
 log = sources.log
@@ -136,6 +136,7 @@ def build_history(prices: dict[str, pd.DataFrame], events: list[dict], cfg: dict
                        ep_score=ep["ep_score"], ep_unknown=ep["ep_unknown"], gap_open_pct=ep["gap_open_pct"],
                        **outcome_since_breakout(d, result.get("breakout_date"), result.get("entry_price") or result.get("pivot")),
                        chart=chart_window(d, pos - 6, pos + 1 + cfg["history_chart_after_bars"]))
+            rec["bt"] = backtest_record(d, pos, cfg)     # 突破當下成立訊號才有；之後的走勢只影響出場結果，不影響有沒有訊號
             records.append(rec)
     return records
 

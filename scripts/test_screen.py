@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from screen import (analyze, analyze_breakout, chart_rows, ep_quality, evaluate_holding, find_gap_day, market_regime,
-                    match_event, momentum_ranks, prepare, season_of, find_gap_days, outcome_since_breakout, chart_window)
+                    match_event, momentum_ranks, prepare, season_of, find_gap_days, outcome_since_breakout, chart_window, simulate_exit, simulate_split, backtest_record, signal_at_breakout)
 
 CFG = json.loads((Path(__file__).parent.parent / "config.json").read_text(encoding="utf-8"))
 
@@ -355,6 +355,79 @@ def test_outcome_since_breakout_is_a_plain_record():
     assert outcome_since_breakout(d, None, None) == {"max_since_breakout_pct": None, "since_breakout_pct": None}
     w = chart_window(d, 70, 90)
     assert w[0][0] == d.index[70].strftime("%Y-%m-%d") and len(w) == 20 and len(w[0]) == 7
+
+
+def _bars(rows):
+    idx = pd.bdate_range("2026-01-01", periods=len(rows))
+    return pd.DataFrame(rows, index=idx, columns=["Open", "High", "Low", "Close"]).assign(Volume=1e6)
+
+
+def test_exit_rules_stop_gap_and_entry_day():
+    flat_bar = (100, 101, 99, 100)
+    # 進場在第 0 根（買 100、止損 95）：之後盤中跌到 94 → 以止損價 95 出場
+    d = _bars([flat_bar, (100, 101, 99, 100), (99, 100, 94, 96)])
+    r = simulate_exit(d, 0, 100, 95, 20, 5)
+    assert (r["reason"], r["exit_price"], r["days"]) == ("stop", 95, 2) and r["ret_pct"] == round((95 / 100 - 1 - 0.001) * 100, 2)
+    assert r["r"] == round(r["ret_pct"] / 5, 2)
+    # 跳空開在止損下方：只能以開盤價出場
+    assert simulate_exit(_bars([flat_bar, (90, 91, 88, 89)]), 0, 100, 95, 20, 5)["exit_price"] == 90
+    # 進場當天最低價就已經碰到止損：保守地算停損（日線看不出盤中先後）
+    r = simulate_exit(_bars([(100, 103, 94, 102), (102, 104, 101, 103)]), 0, 100, 95, 20, 5)
+    assert (r["reason"], r["days"], r["exit_price"]) == ("stop", 0, 95)
+
+
+def test_exit_on_ma_is_next_open_and_20_exits_before_50():
+    closes = [80 + i * 0.9 for i in range(60)] + [126, 121, 119, 118, 119, 122, 127, 131, 135]     # 長多後拉回（只破 20 日線、不碰 50 日線），再創高
+    rows = [(c, c + 1, c - 1, c) for c in closes]
+    d = _bars(rows)
+    entry, stop = closes[50], 100.0                                                                # 止損放很遠，不會被掃到
+    r20, r50, hold = (simulate_exit(d, 50, entry, stop, m, 0) for m in (20, 50, None))
+    assert r20["reason"] == "ma" and r20["exit_date"] > d.index[50].strftime("%Y-%m-%d")
+    i = d.index.get_loc(pd.Timestamp(r20["exit_date"]))
+    assert r20["exit_price"] == round(float(d["Open"].iloc[i]), 2)                                  # 收盤跌破 20 日線 → 隔天開盤賣
+    assert float(d["Close"].iloc[i - 1]) < float(d["Close"].rolling(20).mean().iloc[i - 1])
+    assert r50["reason"] == "open" and hold["reason"] == "open"                                    # 拉回沒跌破 50 日線
+    assert r50["exit_price"] == hold["exit_price"] == round(closes[-1], 2)                         # 未了結：以最後收盤估算
+    assert simulate_exit(d, 50, entry, stop, 20, 0)["ret_pct"] != simulate_exit(d, 50, entry, stop, 50, 0)["ret_pct"]
+
+
+def test_split_takes_half_at_20ma_and_half_at_50ma():
+    closes = [80 + i * 0.9 for i in range(60)] + [126, 121, 119, 118, 119, 122, 127, 131, 135]     # 長多後拉回（跌破 20 日線、不碰 50 日線），再創高
+    d = _bars([(c, c + 1, c - 1, c) for c in closes])
+    entry, stop = closes[50], 100.0
+    a, b = simulate_exit(d, 50, entry, stop, 20, 0), simulate_exit(d, 50, entry, stop, 50, 0)
+    s = simulate_split(d, 50, entry, stop, 0, False)
+    assert s["legs"] == [a, b] and s["reason"] == "mixed"                                           # 一批被 20 日線賣掉、一批續抱
+    assert s["ret_pct"] == round((a["ret_pct"] + b["ret_pct"]) / 2, 2) and s["days"] == round((a["days"] + b["days"]) / 2, 1)
+    # 第一批賣出後把止損移到成本：拉回時剩下那批被成本價掃出場，不會等到後面的新高
+    be = simulate_split(d, 50, entry, stop, 0, True)
+    assert be["legs"][0] == a and be["legs"][1]["reason"] == "stop" and be["ret_pct"] < s["ret_pct"]
+    # 同樣的手續費：兩批各付自己那一半，等於單筆的手續費
+    assert simulate_split(d, 50, entry, stop, 10, False)["ret_pct"] == round(s["ret_pct"] - 0.2, 2)
+    # 兩批都被同一個止損掃掉
+    crash = _bars([(100, 101, 99, 100)] * 3 + [(99, 100, 90, 92)])
+    c = simulate_split(crash, 0, 100, 95, 0, True)
+    assert c["reason"] == "stop" and c["ret_pct"] == -5.0 and c["r"] == -1.0
+
+
+def test_signal_is_point_in_time_failed_breakouts_stay_in_the_sample():
+    base = build(calm(8) + [(120, 126, 119, 125, 2_000_000)])
+    pos = find_gap_day(base, CFG)
+    assert signal_at_breakout(base, pos, CFG) is not None
+    ok = backtest_record(base, pos, CFG)
+    assert ok and ok["entry"] > ok["stop"] and set(ok) >= {"split", "split_be", "ma20", "ma50", "hold", "entry_date", "risk_pct"}
+    # 突破之後暴跌到反應日最低點之下：事後階段變成「失效」，但突破當下確實是訊號，必須留在回測樣本裡（否則樣本被挑過）
+    crashed = extend(base, [(110, 111, 95, 96, 3_000_000)] * 3)
+    assert analyze(crashed, pos, CFG)["stage"] == "removed"
+    again = backtest_record(crashed, pos, CFG)
+    assert again and (again["entry"], again["stop"], again["entry_date"]) == (ok["entry"], ok["stop"], ok["entry_date"])
+    assert again["split"]["ret_pct"] < 0 and again["hold"]["reason"] == "stop"
+    # 突破「之前」就已經跌破反應日最低點：沒有訊號
+    early = build(calm(3) + [(110, 111, 95, 96, 900_000)] + calm(6) + [(120, 130, 119, 128, 2_000_000)], reaction_low=100)
+    assert backtest_record(early, find_gap_day(early, CFG), CFG) is None
+    # 整理天數不夠就突破：整理條件未過，沒有訊號
+    short = build(calm(3) + [(120, 130, 119, 128, 2_000_000)])
+    assert backtest_record(short, find_gap_day(short, CFG), CFG) is None
 
 
 def test_regime():

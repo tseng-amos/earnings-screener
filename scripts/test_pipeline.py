@@ -150,6 +150,8 @@ def test_history_records_season_outcome_and_carry_over():
     recs = build_history(prices, events, CFG)
     assert len(recs) == 1 and recs[0]["symbol"] == "PEAD1" and recs[0]["season"].startswith("2026-S") and recs[0]["stage"] == "breakout"
     assert recs[0]["max_since_breakout_pct"] is not None and recs[0]["chart"][0][0] <= recs[0]["reaction_date"]
+    bt = recs[0]["bt"]
+    assert bt and bt["ma20"]["reason"] in ("stop", "ma", "open") and bt["entry"] > bt["stop"] and bt["hold"]["days"] >= 0   # 突破當下成立訊號才有回測結果
     today = date(2026, 11, 20)
     merged = merge_history([], recs, today)
     assert merged[0]["first_seen"] == "2026-11-20"

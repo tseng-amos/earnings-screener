@@ -23,7 +23,8 @@
     "calm_fail_adr_mult": "影片 A：整理期間每天漲跌幅要比平時小（沒給數字）。財報大漲後波動通常仍偏高，所以 ≤1 倍 ADR 合格、≤1.5 倍（取影片 B 對止損的容忍倍數）只提醒、超過才不合格（暫定）",
     "bo_stop_max_adr_mult": "影片 B：突破單的止損距離不能超過 ADR（1 倍，止損＝突破當天最低點）。改採「前一個轉折低點」後止損天然較遠，暫放寬到 2 倍（暫定）；想回到影片做法請同時設 stop_method=3d 與本值=1",
     "stop_method": "止損位置：swing＝突破前的前一個轉折低點（本站移植自使用者的 NFE Base 轉折指標；只採用反應日／高點之後的整理期轉折，找不到時退回 3d）；3d＝影片原本的做法（PEAD 取突破前最後幾日最低點、突破線取突破當天最低點）",
-    "history_backfill_days / history_chart_after_bars": "影片 A：一年有四個財報季。首次執行時回補過去一年的財報季（抓取天數）；歷史紀錄的迷你 K 線取事件前 6 根到事件後 N 根（暫定）"
+    "history_backfill_days / history_chart_after_bars": "影片 A：一年有四個財報季。首次執行時回補過去一年的財報季（抓取天數）；歷史紀錄的迷你 K 線取事件前 6 根到事件後 N 根（暫定）",
+    "backtest_commission_bps": "舊財報季出場回測的單邊手續費（5 bps＝0.05%，暫定）；進出場各算一次。其餘假設見規則頁「舊季度出場回測」"
   },
   "regime_index": "^IXIC",
   "us_min_mcap_usd": 2000000000,
@@ -128,5 +129,6 @@
   "bo_stop_max_adr_mult": 2.0,
   "stop_method": "swing",
   "history_backfill_days": 370,
-  "history_chart_after_bars": 66
+  "history_chart_after_bars": 66,
+  "backtest_commission_bps": 5
 }

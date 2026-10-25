@@ -88,9 +88,11 @@ def main() -> int:
                 check("載入失敗" not in text, f"財報季 {value} 載入失敗")
                 for word in BAD_WORDS:
                     check(word not in text, f"財報季 {value} 出現「{word}」")
-                expected = next((s["count"] for s in data["seasons"]["list"] if s["id"] == value), 0)
-                shown = sum(int(b.query_selector(".n").inner_text()) for b in page.query_selector_all("#stages-pead button")) if value != current else None
-                check(shown is None or shown == expected, f"財報季 {value}：階段按鈕合計 {shown} ≠ 摘要 {expected}")
+                known = [s["count"] for s in data["seasons"]["list"] if s["id"] == value]
+                shown = sum(int(b.query_selector(".n").inner_text()) for b in page.query_selector_all("#stages-pead button")) if known else None
+                check(shown is None or shown == known[0], f"財報季 {value}：階段按鈕合計 {shown} ≠ 摘要 {known}")
+                if value != current:                                   # 過去季度要有出場回測區塊（沒有訊號時也要有說明文字，不能是空白）
+                    check(page.query_selector("#bt-pead .bt-title") is not None, f"財報季 {value} 沒有出場回測區塊")
             page.select_option("#season-pead", current)
 
         # 倉位試算要隨「設定」改變
