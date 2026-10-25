@@ -49,13 +49,23 @@
   }
 
   // ───────── 階段與顯示 ─────────
+  // 舊季度出場回測：分兩批止盈（20 日線賣一半、50 日線賣一半），另附單一均線與持有當對照
+  const RULES = [
+    ["split", "分兩批", "20 日線賣一半、50 日線賣一半（共用同一個止損）"],
+    ["split_be", "分批+保本", "分兩批，第一批賣出後剩下那批的止損移到成本（影片做法）"],
+    ["ma20", "全20", "全部倉位只用 20 日線出場（對照）"],
+    ["ma50", "全50", "全部倉位只用 50 日線出場（對照）"],
+    ["hold", "持有", "只設止損、持有到現在（對照）"],
+  ];
+  const REASON = { stop: "止", ma: "線", open: "持", mixed: "混" };   // 止＝被止損、線＝跌破均線、持＝未了結、混＝一批已賣一批續抱
+  const sum = (xs) => xs.reduce((t, v) => t + v, 0);
   const STAGE_LABEL = { breakout: "突破中", consolidating: "待突破", setup: "待突破", watch: "觀察", extended: "突破已逾期", removed: "失效" };
   const HOLD_LABEL = { hold: "續抱", partial: "該分批", sell: "該賣出", watch: "留意", nodata: "無資料" };
   const RISK_LABEL = { ideal: "≤1×ADR，理想", acceptable: "≤1.5×ADR，可接受", too_wide: ">1.5×ADR，不建議" };
   const LANES = {
     pead: {
       stages: ["breakout", "consolidating", "watch", "extended", "removed"],
-      items: () => (isHistory("pead") ? (S.hist || []).filter((r) => r.season === S.season) : S.data.pead),
+      items: () => (isHistory("pead") ? (S.hist || []).filter((r) => (S.season === "ALL" ? r.season !== S.data.seasons.current : r.season === S.season)) : S.data.pead),
       id: (c) => `${c.symbol}|${c.reaction_date}`, noteKey: (c) => `pead:${c.symbol}:${c.reaction_date}`,
       hints: {
         breakout: "價格已越過整理區高點。影片：越過就買、止損放突破前最後幾天最低點；日線看不到盤中，所以標出「收盤是否站上」。",
@@ -126,12 +136,13 @@
       { k: "symbol", label: "代號", render: symCell, val: (c) => c.symbol, dir: 1 },
       { k: "stage", label: "最終階段", title: "到最新資料為止的階段（當時入選，之後走到哪）。", render: (c) => `<span class="stage s-${c.stage}">${STAGE_LABEL[c.stage]}</span>`, val: (c) => priority("pead", c) },
       { k: "reaction_date", label: "反應日", render: (c) => `${md(c.reaction_date)} <small class="muted">${timeTag(c)}</small>`, val: (c) => c.reaction_date },
-      { k: "gain_pct", label: "漲幅", num: 1, render: (c) => `<span class="up">${pct(c.gain_pct, 1, true)}</span>`, val: (c) => c.gain_pct },
-      { k: "ep", label: "EP", num: 1, cls: "lo", render: (c) => `${c.ep_score ?? "—"}/5`, val: (c) => c.ep_score },
+      { k: "gain_pct", label: "漲幅", num: 1, cls: "lo", render: (c) => `<span class="up">${pct(c.gain_pct, 1, true)}</span>`, val: (c) => c.gain_pct },
       { k: "breakout_date", label: "突破日", num: 1, render: (c) => (c.breakout_date ? md(c.breakout_date) : "—"), val: (c) => c.breakout_date },
       { k: "pivot", label: "買點", num: 1, cls: "lo", render: (c) => num(c.pivot), val: (c) => c.pivot },
-      { k: "max_since", label: "突破後最高", num: 1, title: "以買點進場、之後出現的最高價，相對買點的漲幅。事後紀錄，不含止損與出場。", render: (c) => (c.max_since_breakout_pct == null ? "—" : `<span class="up">${pct(c.max_since_breakout_pct, 1, true)}</span>`), val: (c) => c.max_since_breakout_pct },
-      { k: "since", label: "目前", num: 1, title: "最新收盤相對買點。", render: (c) => (c.since_breakout_pct == null ? "—" : `<span class="${c.since_breakout_pct >= 0 ? "up" : "down"}">${pct(c.since_breakout_pct, 1, true)}</span>`), val: (c) => c.since_breakout_pct },
+      ...RULES.map(([k, short, long]) => ({ k: `bt_${k}`, label: short, num: 1, cls: k === "split" ? "" : "lo", title: `${long}：突破買進到出場的報酬（扣手續費）。止＝被止損、線＝跌破均線、持＝未了結、混＝一批已賣一批續抱。`,
+        render: (c) => { const x = c.bt?.[k]; return x ? `<span class="${x.ret_pct >= 0 ? "up" : "down"}">${pct(x.ret_pct, 1, true)}</span><small class="muted"> ${REASON[x.reason]}</small>` : '<span class="muted">—</span>'; },
+        val: (c) => c.bt?.[k]?.ret_pct })),
+      { k: "max_since", label: "突破後最高", num: 1, cls: "lo", title: "以買點進場、之後出現的最高價，相對買點的漲幅。", render: (c) => (c.max_since_breakout_pct == null ? "—" : `<span class="up">${pct(c.max_since_breakout_pct, 1, true)}</span>`), val: (c) => c.max_since_breakout_pct },
       { k: "removed_on", label: "失效日", num: 1, cls: "lo", render: (c) => (c.removed_on ? md(c.removed_on) : "—"), val: (c) => c.removed_on },
     ],
     pead_removed: [
@@ -170,6 +181,35 @@
   };
 
   const colsFor = (lane) => (isHistory(lane) ? COLS.pead_history : lane === "pead" && ui("pead").stage === "removed" ? COLS.pead_removed : COLS[lane]);
+
+  // ───────── 舊季度出場回測（20／50 日線止盈）─────────
+  function btStats(items, key) {
+    const xs = items.map((c) => c.bt?.[key]).filter(Boolean), n = xs.length;
+    if (!n) return null;
+    const r = xs.map((x) => x.ret_pct), sorted = [...r].sort((p, q) => p - q), rs = xs.map((x) => x.r).filter((v) => v != null);
+    const gw = sum(r.filter((v) => v > 0)), gl = -sum(r.filter((v) => v <= 0));
+    return { n, win: r.filter((v) => v > 0).length / n * 100, avg: sum(r) / n, med: n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2,
+      pf: gl > 0 ? gw / gl : null, expR: rs.length ? sum(rs) / rs.length : null, best: sorted[n - 1], worst: sorted[0], days: sum(xs.map((x) => x.days)) / n, open: xs.filter((x) => x.reason === "open" || (x.legs || []).some((l) => l.reason === "open")).length };
+  }
+  function renderBacktest() {
+    const box = $("#bt-pead");
+    if (!box) return;
+    if (!isHistory("pead") || !S.hist) { box.innerHTML = ""; return; }
+    const items = LANES.pead.items(), signals = items.filter((c) => c.bt).length;
+    const rows = RULES.map(([k, , long]) => [k === "split" || k === "split_be" ? long.replace("（共用同一個止損）", "") : long, btStats(items, k)]);
+    const f = (v, d = 1, s = true) => (v == null ? "—" : pct(v, d, s));
+    box.innerHTML = `<h3 class="bt-title">出場回測：突破買進後，20 日線賣一半、50 日線賣一半</h3>
+      <p class="muted bt-note">${items.length} 檔入選中，<b>${signals}</b> 檔在突破當下成立訊號（整理條件合格），以下只看這些。${signals < 30 ? `<span class="neg"> 樣本只有 ${signals} 筆，不具統計意義，只能看個大概。</span>` : ""}</p>
+      ${signals ? `<div class="tablewrap"><table class="kv bt-table"><thead><tr><th>出場方式</th><th class="num">筆數</th><th class="num">勝率</th><th class="num">平均</th><th class="num">中位數</th><th class="num" title="以每筆的初始風險（買點到止損）為 1R">平均 R</th><th class="num">獲利因子</th><th class="num">最佳</th><th class="num">最差</th><th class="num">平均持有</th><th class="num">未了結</th></tr></thead><tbody>
+        ${rows.map(([label, s]) => (s ? `<tr><td>${label}</td><td class="num">${s.n}</td><td class="num">${num(s.win, 0)}%</td><td class="num ${s.avg >= 0 ? "up" : "down"}">${f(s.avg)}</td><td class="num ${s.med >= 0 ? "up" : "down"}">${f(s.med)}</td><td class="num">${s.expR == null ? "—" : num(s.expR, 2) + "R"}</td><td class="num">${s.pf == null ? "—" : num(s.pf, 2)}</td><td class="num up">${f(s.best)}</td><td class="num down">${f(s.worst)}</td><td class="num">${num(s.days, 0)} 天</td><td class="num">${s.open}</td></tr>` : `<tr><td>${label}</td><td colspan="10" class="muted">沒有資料</td></tr>`)).join("")}</tbody></table></div>` : ""}
+      <details class="bt-assume"><summary>回測假設與偏差（請先讀）</summary><ul>
+        <li>只看<b>突破當下成立訊號</b>的標的（只用突破當天以前的資料判斷），之後走勢怎麼變都不影響有沒有訊號；突破後才失效的失敗案例也在樣本裡。</li>
+        <li>進場：突破當天以「買點與開盤價較高者」買進；止損＝當時的預設止損（前一個轉折低點）；進場當天最低價碰到止損就算停損。</li>
+        <li><b>分兩批</b>：一半倉位在收盤跌破 20 日線時賣、另一半在收盤跌破 50 日線時賣（都是隔天開盤）；報酬是兩批的平均。止損兩批共用，固定不上移。<b>分批+保本</b>：第一批賣出後，剩下那批的止損移到買入價（影片做法）。「全 20／全 50／持有」只是對照：全部倉位只用單一均線，或只設止損。</li>
+        <li>止損：最低價 ≤ 止損 → 以止損價出場，跳空開在止損下方則以開盤價。到資料結束仍未出場者以最後收盤估算，列為「未了結」。</li>
+        <li>報酬已扣單邊 ${S.cfg.backtest_commission_bps} bps 手續費 ×2；沒有滑價、沒有倉位大小與資金曲線，每筆獨立計算。</li>
+        <li><b>偏差</b>：①股票池是「現在還能下載到價格的標的」，已下市或被併購的不在裡面（存活者偏差，會高估）；②價格只涵蓋約一年，也就是最多三、四個財報季；③20、50 是你指定的兩個數字，沒有針對這份資料調過，但樣本小，各種做法的差距多半只是雜訊。</li></ul></details>`;
+  }
 
   // ───────── 頁首：大盤與資料狀態 ─────────
   function renderRegime() {
@@ -210,7 +250,8 @@
   function seasonSelectHtml() {
     const cur = S.data.seasons.current, list = S.data.seasons.list || [];
     const opts = list.some((s) => s.id === cur) ? list : [{ id: cur, label: seasonLabel(cur), count: 0 }, ...list];
-    return `<label class="seasonpick">財報季 <select id="season-pead" aria-label="財報季">${opts.map((s) =>
+    const pastN = opts.filter((s) => s.id !== cur).reduce((t, s) => t + s.count, 0);
+    return `<label class="seasonpick">財報季 <select id="season-pead" aria-label="財報季">${pastN ? `<option value="ALL" ${S.season === "ALL" ? "selected" : ""}>所有過去季度（合計）　${pastN} 檔</option>` : ""}${opts.map((s) =>
       `<option value="${esc(s.id)}" ${s.id === S.season ? "selected" : ""}>${esc(s.label)}${s.id === cur ? "（當季）" : ""}　${s.count} 檔</option>`).join("")}</select></label>`;
   }
 
@@ -237,6 +278,7 @@
         <button class="btn" data-act="csv" data-lane="${lane}" title="買點、止損與建議股數，拿去設價格提醒">下載提醒價 CSV</button>
       </div>
       <p class="lede muted" id="hint-${lane}" style="font-size:13.5px"></p>
+      ${lane === "pead" ? '<div id="bt-pead"></div>' : ""}
       <div class="workspace">
         <div class="tablewrap"><table class="list" id="list-${lane}"></table></div>
         <aside class="detail" id="detail-${lane}" aria-live="polite"></aside>
@@ -263,7 +305,7 @@
     const count = (s) => all.filter((c) => c.stage === s).length;
     $(`#stages-${lane}`).innerHTML = L.stages.map((s) =>
       `<button class="s-${s}" style="--c:var(--${s === "breakout" ? "hot" : s === "consolidating" || s === "setup" ? "amber" : "muted"})" data-stage="${s}" aria-pressed="${u.stage === s}">${STAGE_LABEL[s]}<span class="n">${count(s)}</span></button>`).join("");
-    $(`#hint-${lane}`).textContent = isHistory(lane) ? "財報季紀錄：階段是「到最新資料為止」的結果。「突破後最高」與「目前」是以買點進場的事後價格紀錄，不含止損與出場，不是績效。" : (L.hints[u.stage] || "");
+    $(`#hint-${lane}`).textContent = isHistory(lane) ? "階段是「到最新資料為止」的結果。「分兩批」等欄位是突破買進後的出場報酬（20 日線賣一半、50 日線賣一半；止＝被止損、線＝跌破均線、持＝未了結、混＝一批已賣一批續抱）；「突破後最高」只是事後價格紀錄。" : (L.hints[u.stage] || "");
     renderLede(lane);
 
     const rows = visibleItems(lane);
@@ -273,13 +315,17 @@
       <tbody>${rows.map((c) => `<tr class="row s-${c.stage} ${L.id(c) === S.sel[lane] ? "sel" : ""} ${(c.stage === "breakout" && weak()) || c.stage === "removed" || c.stage === "extended" ? "dim" : ""}" tabindex="0" data-id="${esc(L.id(c))}">${cols.map((x) => `<td class="${x.num ? "num" : ""} ${x.cls || ""}">${x.render(c)}</td>`).join("")}</tr>`).join("") ||
         `<tr class="empty"><td colspan="${cols.length}">這個階段目前沒有標的。</td></tr>`}</tbody>`;
     renderDetail(lane);
+    if (lane === "pead") renderBacktest();
   }
 
   function renderLede(lane) {
     if (isHistory(lane)) {
-      const si = seasonInfo() || {}, st = si.stages || {};
+      const items = LANES[lane].items(), broke = items.filter((c) => c.breakout_date), removed = items.filter((c) => c.stage === "removed").length;
+      const mx = broke.map((c) => c.max_since_breakout_pct).filter((v) => v != null).sort((p, q) => p - q);
+      const mid = mx.length ? (mx.length % 2 ? mx[(mx.length - 1) / 2] : (mx[mx.length / 2 - 1] + mx[mx.length / 2]) / 2) : null;
+      const label = S.season === "ALL" ? "所有過去季度（合計）" : (seasonInfo()?.label || S.season);
       $(`#lede-${lane}`).innerHTML = S.histError ? `歷史紀錄載入失敗：${esc(S.histError)}` : !S.hist ? "讀取歷史紀錄中…"
-        : `<b>${esc(si.label || S.season)}</b>：當時共 <b>${si.count ?? 0}</b> 檔入選，其中 <b>${si.broke ?? 0}</b> 檔後來突破${si.median_max_since_breakout_pct != null ? `（突破後最高漲幅中位數 ${pct(si.median_max_since_breakout_pct, 1, true)}）` : ""}、失效 ${st.removed ?? 0} 檔。<span class="src">這是事後紀錄：數字會隨最新價格更新，樣本小、不含止損與出場，只能拿來看這一季的行情長什麼樣，不能當績效。</span>`;
+        : `<b>${esc(label)}</b>：當時共 <b>${items.length}</b> 檔入選，其中 <b>${broke.length}</b> 檔後來突破${mid != null ? `（突破後最高漲幅中位數 ${pct(mid, 1, true)}）` : ""}、失效 ${removed} 檔。<span class="src">這是事後紀錄，數字會隨最新價格更新；下方的出場回測只涵蓋突破當下成立訊號的標的。</span>`;
       return;
     }
     const L = LANES[lane], all = L.items(), D = S.data, sum = D.summary || {};
@@ -367,6 +413,17 @@
       <div class="legend"><span><i style="color:var(--accent)"></i>50 日線</span>${c.pivot != null ? `<span><i style="color:var(--hot)"></i>買點</span><span><i class="stop-i"></i>止損</span>` : ""}<span>量能在下方</span></div>`;
   }
 
+  function btDetailHtml(c) {
+    if (!isHistory("pead")) return "";
+    if (!c.bt) return '<h3>出場回測</h3><p class="muted" style="font-size:13px">突破當下沒有成立訊號（還沒突破、整理條件未過，或突破前就已失效），不列入回測。</p>';
+    const b = c.bt, why = { stop: "被止損", ma: "跌破均線", open: "未了結", mixed: "一批已賣、一批續抱" };
+    const line = (label, x, sub) => `<tr class="${sub ? "bt-leg" : ""}"><td>${label}</td><td>${md(x.exit_date)}</td><td class="num">${x.exit_price == null ? "—" : num(x.exit_price)}</td><td class="num ${x.ret_pct >= 0 ? "up" : "down"}">${pct(x.ret_pct, 1, true)}</td><td class="num">${x.r == null ? "—" : num(x.r, 2) + "R"}</td><td class="num">${x.days} 天</td><td>${why[x.reason]}</td></tr>`;
+    const legs = (x) => x.legs ? [line("└ 20 日線那一批（賣一半）", x.legs[0], true), line("└ 50 日線那一批（賣一半）", x.legs[1], true)].join("") : "";
+    const rows = RULES.map(([k, , long]) => line(k === "split" || k === "split_be" ? long.replace("（共用同一個止損）", "") : long, b[k]).replace("<td>" + md(b[k].exit_date) + "</td>", `<td>${b[k].legs ? "（見下）" : md(b[k].exit_date)}</td>`) + legs(b[k])).join("");
+    return `<h3>出場回測</h3><p class="muted" style="font-size:13px;margin:0 0 6px">${md(b.entry_date)} 以 ${num(b.entry)} 買進，止損 ${num(b.stop)}（風險 ${pct(b.risk_pct, 1)}，${b.stop_method === "swing" ? "前一個轉折低點" : "近日最低點"}）。報酬為兩批的平均，已扣手續費。</p>
+      <div class="tablewrap"><table class="kv bt-table"><thead><tr><th>做法</th><th>出場日</th><th class="num">價</th><th class="num">報酬</th><th class="num">R</th><th class="num">持有</th><th>原因</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
   function removedHtml(c) {
     const row = (a, b) => `<dt>${a}</dt><dd>${b}</dd>`, v = (c.last_close / c.reaction_low - 1) * 100;
     return `<h3>失效資訊</h3><dl class="levels">${row("反應日", `${md(c.reaction_date)} ${esc(c.earnings_time || "")}`)}${row("反應日漲幅", `<span class="up">${pct(c.gain_pct, 1, true)}</span>`)}
@@ -396,7 +453,7 @@
       <h2>${esc(c.symbol)} ${changeTag(c)}</h2>
       <div class="sub">${esc(c.name || "")} · <a href="${tv(c.symbol)}" target="_blank" rel="noopener">TradingView 圖表 ↗</a>${lane === "pead" ? ` · 財報 ${md(c.earnings_date)} ${esc(c.earnings_time || "")}` : ""}</div>
       <p class="verdict">${verdict(lane, c)}</p>
-      ${chartHtml(c, lane)}${c.stage === "removed" ? removedHtml(c) : `${levelsHtml(lane, c)}${isHistory(lane) ? "" : stopPickerHtml(lane, c) + sizingHtml(lane, c)}
+      ${chartHtml(c, lane)}${btDetailHtml(c)}${c.stage === "removed" ? removedHtml(c) : `${levelsHtml(lane, c)}${isHistory(lane) ? "" : stopPickerHtml(lane, c) + sizingHtml(lane, c)}
       ${lane === "pead" ? checksHtml("整理條件（影片 A）", c.checks) + checksHtml("EP 品質（影片 B）", c.ep_checks) : checksHtml("形態條件（影片 B）", c.checks)}
       ${keyHtml}${manualHtml(lane, c)}`}`;
   }
@@ -481,6 +538,9 @@
       <h2>財報季與歷史紀錄</h2>
       <p>影片：一年有四個財報季。本站依<b>財報日所在的季度</b>分組：1～3 月公布的是上年度 Q4、4～6 月是 Q1、7～9 月是 Q2、10～12 月是 Q3。「財報後 PEAD／EP」頁上方的<b>財報季</b>選單可切換：<b>當季</b>看即時清單；<b>過去的季度</b>看歷史紀錄——當時入選的每一檔，到最新資料為止走到哪個階段、突破後最高漲了多少。</p>
       <p class="src">歷史紀錄靠一次次接力累積：首次部署時用已抓到的一年價格與日曆回補，之後每次更新都把新結果併進上次部署的 <code>history.json</code>（Actions 快取當備援，兩份取聯集）。只有兩份都遺失時才會重新回補近一年，更早的季度就不見了，所以請不要刪除 Actions 快取又重建 repo。「突破後最高」「目前」只是事後價格紀錄，不含止損與出場，不是績效。</p>
+      <h2>舊季度出場回測（20／50 日線分兩批止盈）</h2>
+      <p>切到過去的財報季（或「所有過去季度（合計）」），清單會多出「分兩批」等欄位，頁面上方有統計表。做法：對每一次財報大漲，<b>只用突破當天以前的資料判斷訊號是否成立</b>，成立就以買點買進、止損放預設的轉折低點；之後<b>一半倉位在收盤跌破 20 日線時賣、另一半在收盤跌破 50 日線時賣</b>（隔天開盤），報酬取兩批平均。另外列出「第一批賣出後止損移到成本」（影片做法）、「全部只用 20 日線」「全部只用 50 日線」「只設止損持有」當對照。</p>
+      <p class="src">這是描述性的事後檢視，不是預測：價格只涵蓋約一年（三到四個財報季）、股票池有存活者偏差、沒有滑價與倉位管理。兩條均線是你指定的數字，沒有針對資料調整，但樣本少時各種做法的差距多半是雜訊。</p>
       <h2>大盤濾網</h2>
       <p>看那斯達克：<b>10 日線在 20 日線之上且兩線都向上</b>＝正常做；有一條走平或拐頭＝小心、縮小倉位；<b>10 日線在 20 日線下且兩線向下</b>＝突破容易失敗，少做小做（影片提到 2022～2023 年大多靠 EP）。「向上」是指今天的均線比 3 個交易日前高。頁首會逐項列出三個條件，哪一項沒過就直接標出來。本站在弱勢時把「突破」排到「待突破」之後並加註警示。</p>
       <h2>本站刻意不做</h2>
