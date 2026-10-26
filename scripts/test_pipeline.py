@@ -56,7 +56,7 @@ def test_charts_and_holdings_are_attached():
     holdings = [{"symbol": "PEAD1", "entry_date": entry, "entry_price": "120", "stop": "115", "partial_done": "N", "exit_ma": "10"},
                 {"symbol": "NOPE", "entry_date": entry, "entry_price": "10"}]
     out = build_screen(prices, events, {"status": "strong"}, CFG, date(2026, 11, 20), holdings)
-    assert len(out["pead"][0]["chart"][0]) == 7 and out["pead"][0]["chart"][0][0] <= out["pead"][0]["reaction_date"]
+    assert len(out["pead"][0]["chart"][0]) == 8 and out["pead"][0]["chart"][0][0] <= out["pead"][0]["reaction_date"]
     assert out["breakout"][0]["chart"][0][0] <= out["breakout"][0]["peak_date"]
     assert out["holdings"][0]["symbol"] == "PEAD1" and out["holdings"][0]["held_days"] == 5 and "chart" in out["holdings"][0]
     assert out["holdings"][1]["status"] == "nodata"

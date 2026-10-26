@@ -410,16 +410,16 @@
     if (c.breakout_date) marks.push({ date: c.breakout_date, label: "突破" });
     if (c.stop_method === "swing" && c.stop_swing_date) marks.push({ date: c.stop_swing_date, label: "轉折低" });
     return `<div class="chartbox">${Chart2.candleSvg(c.chart, { levels, marks, label: `${c.symbol} 近期日線` })}</div>
-      <div class="legend"><span><i style="color:var(--accent)"></i>50 日線</span>${c.pivot != null ? `<span><i style="color:var(--hot)"></i>買點</span><span><i class="stop-i"></i>止損</span>` : ""}<span>量能在下方</span></div>`;
+      <div class="legend"><span><i style="color:var(--amber)"></i>20 日線</span><span><i style="color:var(--accent)"></i>50 日線</span>${c.pivot != null ? `<span><i style="color:var(--hot)"></i>買點</span><span><i class="stop-i"></i>止損</span>` : ""}<span>量能在下方</span></div>`;
   }
 
   function btDetailHtml(c) {
     if (!isHistory("pead")) return "";
     if (!c.bt) return '<h3>出場回測</h3><p class="muted" style="font-size:13px">突破當下沒有成立訊號（還沒突破、整理條件未過，或突破前就已失效），不列入回測。</p>';
-    const b = c.bt, why = { stop: "被止損", ma: "跌破均線", open: "未了結", mixed: "一批已賣、一批續抱" };
+    const b = c.bt, why = { stop: "被止損", ma: "跌破均線", open: "未了結", mixed: "一批已賣" };
     const line = (label, x, sub) => `<tr class="${sub ? "bt-leg" : ""}"><td>${label}</td><td>${md(x.exit_date)}</td><td class="num">${x.exit_price == null ? "—" : num(x.exit_price)}</td><td class="num ${x.ret_pct >= 0 ? "up" : "down"}">${pct(x.ret_pct, 1, true)}</td><td class="num">${x.r == null ? "—" : num(x.r, 2) + "R"}</td><td class="num">${x.days} 天</td><td>${why[x.reason]}</td></tr>`;
     const legs = (x) => x.legs ? [line("└ 20 日線那一批（賣一半）", x.legs[0], true), line("└ 50 日線那一批（賣一半）", x.legs[1], true)].join("") : "";
-    const rows = RULES.map(([k, , long]) => line(k === "split" || k === "split_be" ? long.replace("（共用同一個止損）", "") : long, b[k]).replace("<td>" + md(b[k].exit_date) + "</td>", `<td>${b[k].legs ? "（見下）" : md(b[k].exit_date)}</td>`) + legs(b[k])).join("");
+    const rows = RULES.map(([k, , long]) => line(k === "split" || k === "split_be" ? long.replace("（共用同一個止損）", "") : long, b[k]).replace("<td>" + md(b[k].exit_date) + "</td>", `<td>${b[k].legs ? "見下" : md(b[k].exit_date)}</td>`) + legs(b[k])).join("");
     return `<h3>出場回測</h3><p class="muted" style="font-size:13px;margin:0 0 6px">${md(b.entry_date)} 以 ${num(b.entry)} 買進，止損 ${num(b.stop)}（風險 ${pct(b.risk_pct, 1)}，${b.stop_method === "swing" ? "前一個轉折低點" : "近日最低點"}）。報酬為兩批的平均，已扣手續費。</p>
       <div class="tablewrap"><table class="kv bt-table"><thead><tr><th>做法</th><th>出場日</th><th class="num">價</th><th class="num">報酬</th><th class="num">R</th><th class="num">持有</th><th>原因</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   }

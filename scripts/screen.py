@@ -396,10 +396,10 @@ def market_regime(close: pd.Series) -> dict:
 
 
 def chart_rows(d: pd.DataFrame, start_pos: int, tail: int = 75) -> list:
-    """給前端迷你 K 線：自 start_pos 起到最新，最多 tail 根。[日期, 開, 高, 低, 收, 量, 50日線]"""
+    """給前端迷你 K 線：自 start_pos 起到最新，最多 tail 根。[日期, 開, 高, 低, 收, 量, 50日線, 20日線]"""
     seg = d.iloc[max(start_pos, len(d) - tail, 0):]
     clean = lambda v: None if pd.isna(v) else round(float(v), 2)  # noqa: E731
-    return [[idx.strftime("%Y-%m-%d"), clean(r.Open), clean(r.High), clean(r.Low), clean(r.Close), int(r.Volume), clean(r.sma50)]
+    return [[idx.strftime("%Y-%m-%d"), clean(r.Open), clean(r.High), clean(r.Low), clean(r.Close), int(r.Volume), clean(r.sma50), clean(r.sma20)]
             for idx, r in seg.iterrows()]
 
 
@@ -474,7 +474,7 @@ def chart_window(d: pd.DataFrame, start_pos: int, end_pos: int) -> list:
     """歷史紀錄的迷你 K 線：事件前後固定一段 [start_pos, end_pos)，不是「最近 N 根」。"""
     seg = d.iloc[max(start_pos, 0):max(end_pos, 0)]
     clean = lambda v: None if pd.isna(v) else round(float(v), 2)  # noqa: E731
-    return [[idx.strftime("%Y-%m-%d"), clean(r.Open), clean(r.High), clean(r.Low), clean(r.Close), int(r.Volume), clean(r.sma50)]
+    return [[idx.strftime("%Y-%m-%d"), clean(r.Open), clean(r.High), clean(r.Low), clean(r.Close), int(r.Volume), clean(r.sma50), clean(r.sma20)]
             for idx, r in seg.iterrows()]
 
 

@@ -263,7 +263,7 @@ def test_ep_quality_growth_revenue_and_oneoff():
 def test_chart_rows_shape():
     d = build(calm(8))
     rows = chart_rows(d, 74, 75)
-    assert rows[0][0] == d.index[max(74, len(d) - 75)].strftime("%Y-%m-%d") and len(rows[0]) == 7 and len(rows) <= 75
+    assert rows[0][0] == d.index[max(74, len(d) - 75)].strftime("%Y-%m-%d") and len(rows[0]) == 8 and len(rows) <= 75
 
 
 def _hold(entry_date, **kw):
@@ -354,7 +354,7 @@ def test_outcome_since_breakout_is_a_plain_record():
     assert o["since_breakout_pct"] == round((127 / r["entry_price"] - 1) * 100, 1)
     assert outcome_since_breakout(d, None, None) == {"max_since_breakout_pct": None, "since_breakout_pct": None}
     w = chart_window(d, 70, 90)
-    assert w[0][0] == d.index[70].strftime("%Y-%m-%d") and len(w) == 20 and len(w[0]) == 7
+    assert w[0][0] == d.index[70].strftime("%Y-%m-%d") and len(w) == 20 and len(w[0]) == 8
 
 
 def _bars(rows):

@@ -1,7 +1,8 @@
-/* 迷你 K 線（純 SVG，無外部套件）。rows：[日期, 開, 高, 低, 收, 量, 50 日線]。 */
+/* 迷你 K 線（純 SVG，無外部套件）。rows：[日期, 開, 高, 低, 收, 量, 50 日線, 20 日線]（舊資料可能沒有第 8 欄）。 */
 (function (root) {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+  let seq = 0;   // 每張圖一個獨立的裁切 id
   function candleSvg(rows, opts = {}) {
     if (!rows || rows.length < 3) return "";
     const W = 580, H = 300, PL = 6, PR = 118, PB = 22, VOL = 48, GAP = 8;
@@ -39,9 +40,13 @@
       const h = Math.max(1, (r[5] || 0) / maxVol * VOL);
       out += `<rect class="ch-vol ${r[4] >= r[1] ? "up" : "down"}" x="${x(i) - bw / 2}" y="${volTop + VOL - h}" width="${bw}" height="${h}"/>`;
     });
-    // 50 日線
-    const sma = rows.map((r, i) => (r[6] == null ? null : `${x(i).toFixed(1)},${y(r[6]).toFixed(1)}`)).filter(Boolean);
-    if (sma.length > 1) out += `<polyline class="ch-sma" points="${sma.join(" ")}"/>`;
+    // 均線（20、50 日）：只畫在價格區內，離得太遠的部分裁掉，不會跑進成交量區
+    const clipId = `clip${++seq}`;
+    const line = (col, cls) => {
+      const pts = rows.map((r, i) => (r[col] == null ? null : `${x(i).toFixed(1)},${y(r[col]).toFixed(1)}`)).filter(Boolean);
+      return pts.length > 1 ? `<polyline class="${cls}" points="${pts.join(" ")}"/>` : "";
+    };
+    out += `<clipPath id="${clipId}"><rect x="${PL}" y="${PT}" width="${W - PL - PR}" height="${priceH}"/></clipPath><g clip-path="url(#${clipId})">${line(6, "ch-sma")}${line(7, "ch-sma20")}</g>`;
     // K 線
     rows.forEach((r, i) => {
       const up = r[4] >= r[1], top = y(Math.max(r[1], r[4])), bot = y(Math.min(r[1], r[4]));
